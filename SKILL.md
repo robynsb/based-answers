@@ -29,6 +29,14 @@ nix develop "path:.opencode/skills/citation-grounded-qa" -c python3 .opencode/sk
 
 ```
 ┌──────────────────────────────────────────────────┐
+│ 0. SETUP                                          │
+│    mkdir -p answers                               │
+│    Derive <slug> from question (kebab-case)       │
+│    Check for prior-session file at that slug      │
+└──────────────────────────────────────────────────┘
+         │
+         ▼
+┌──────────────────────────────────────────────────┐
 │ 1. INDEX                                          │
 │    nix develop "path:SKILL_DIR" -c python3        │
 │    SKILL_DIR/pdf-search.py <source> info          │
@@ -44,6 +52,8 @@ nix develop "path:.opencode/skills/citation-grounded-qa" -c python3 .opencode/sk
 │    "<term>"                                       │
 │    → Returns matching paragraph chunks + pages    │
 │    Iterate across all sources for the question    │
+│    Check answers/ for existing .yml files —       │
+│    reuse supported claims from prior sessions     │
 │    Vary search terms to cover all aspects         │
 └──────────────────────────────────────────────────┘
          │
@@ -59,22 +69,18 @@ nix develop "path:.opencode/skills/citation-grounded-qa" -c python3 .opencode/sk
          ▼
 ┌──────────────────────────────────────────────────┐
 │ 4. ANSWER (as YAML)                               │
-│    Write answers.yaml with claims + citations:    │
-│    question: "..."                                │
-│    answers:                                       │
-│      - claim: "..."                               │
-│        citations:                                 │
-│          - text: "verbatim quote"                 │
-│            page: 12                               │
-│            source: "paper.pdf"                    │
-│    Output to answers.yaml                         │
+│    Write answers/<slug>.yml with claims+          │
+│    citations (see Rule 2 for structure)           │
+│    If file from prior session exists, use         │
+│    <slug>-N.yml instead (N = lowest free)         │
 └──────────────────────────────────────────────────┘
          │
          ▼
 ┌──────────────────────────────────────────────────┐
 │ 5. DETERMINISTIC VERIFICATION                     │
 │    nix develop "path:SKILL_DIR" -c python3        │
-│    SKILL_DIR/verify-citations.py answers.yaml     │
+│    SKILL_DIR/verify-citations.py                  │
+│      answers/<slug>.yml                           │
 │    → Checks every citation text exists verbatim   │
 │      in the source PDF (string match, no LLM)     │
 │    → Also checks concatenation is exact join      │
@@ -120,7 +126,7 @@ nix develop "path:.opencode/skills/citation-grounded-qa" -c python3 .opencode/sk
     ▼
 ┌──────────────────────────────────────────────────┐
 │ 8. OUTPUT                                         │
-│    Final answer as answers.yaml (verified).       │
+│    Final answer as answers/<slug>.yml (verified).│
 │    Or: "Unable to answer after 3 rounds."          │
 └──────────────────────────────────────────────────┘
 ```
@@ -130,8 +136,12 @@ nix develop "path:.opencode/skills/citation-grounded-qa" -c python3 .opencode/sk
 ### Rule 1: No World Knowledge
 Every fact in the answer must trace to a verbatim source quote with page number. If you know something from training data, you cannot use it unless the source says it.
 
-### Rule 2: Answer Format (YAML)
-Every answer must be written as a YAML file (`answers.yaml`) with this exact structure:
+### Rule 2: Answer File & Format
+Every answer is written as `answers/<slug>.yml`. Derive the slug from the question: lowercase, replace non-alphanumeric characters (except spaces) with nothing, replace spaces with hyphens, collapse consecutive hyphens, and strip leading/trailing hyphens. Truncate to 80 chars if needed.
+
+Before writing, check if `answers/<slug>.yml` already exists from a prior session. If it does and you did not create it in this session, use `answers/<slug>-2.yml`, `answers/<slug>-3.yml`, etc. (lowest free N). Within the same session, retries edit the same file in-place.
+
+The YAML structure is:
 
 ```yaml
 question: "What is the maximum clock speed of the RP2350?"
@@ -213,19 +223,25 @@ The cited passage(s) must support what the claim says:
 
 If no passage(s) support your claim, search for better passages or drop the claim.
 
+### Rule 9: Answers Directory & Prior-Session Claims
+
+Before any search step, ensure `answers/` exists (`mkdir -p answers`). During the search phase, read all `.yml` files in `answers/`. If any contain claims and citations that are relevant to the current question AND are supported by the current source PDFs, reuse them. This avoids re-doing work from prior sessions.
+
+Never overwrite a file you did not create in the current session. Use the `-N` suffix scheme from Rule 2 to pick a non-conflicting name.
+
 ## Three-Stage Verification
 
 This skill uses three independent verification stages:
 
 ### Stage 1: Deterministic Citation Verification (verify-citations.py)
 
-Runs `verify-citations.py answers.yaml` — a Python script that performs exact string matching against the extracted PDF text. No LLM involved. This catches:
+Runs `verify-citations.py answers/<slug>.yml` — a Python script that performs exact string matching against the extracted PDF text. No LLM involved. This catches:
 - Paraphrased citations (text doesn't match source exactly)
 - Wrong page numbers
 - Hallucinated quotes
 - Incorrect `concatenation` field (must be exact join of all claims with `". "`)
 
-Run: `nix develop "path:SKILL_DIR" -c python3 SKILL_DIR/verify-citations.py answers.yaml`
+Run: `nix develop "path:SKILL_DIR" -c python3 SKILL_DIR/verify-citations.py answers/<slug>.yml`
 
 ### Stage 2: Semantic Checker Sub-Agent
 
@@ -346,7 +362,7 @@ If Stage 3 returns FAIL, return to step 2 (Search) with feedback from the sub-ag
 - You're considering reading the entire PDF rather than searching
 - You're printing what the checker "would say" instead of dispatching it
 - You haven't run verify-citations.py yet
-- You forgot to add the `concatenation` field to answers.yaml
+- You forgot to add the `concatenation` field to the answer YAML
 - The concatenation won't read as a coherent paragraph when claims are joined
 
 Any of these → stop, search the PDF, find the exact quote, run verification.
@@ -376,12 +392,12 @@ Cache: extracted text is cached as `<file.pdf>.json`. Re-run to refresh.
 Deterministic citation verifier. Checks every citation text exists verbatim in the source PDF, and that the `concatenation` field is the exact join of all claims with `". "`.
 
 ```
-nix develop "path:SKILL_DIR" -c python3 SKILL_DIR/verify-citations.py answers.yaml
+nix develop "path:SKILL_DIR" -c python3 SKILL_DIR/verify-citations.py answers/<slug>.yml
   → PASS/FAIL for every (claim, citation) pair
   → PASS/FAIL for concatenation check
   → Exit code 0 = all pass, 1 = any fail
 
-nix develop "path:SKILL_DIR" -c python3 SKILL_DIR/verify-citations.py answers.yaml --format json
+nix develop "path:SKILL_DIR" -c python3 SKILL_DIR/verify-citations.py answers/<slug>.yml --format json
   → Machine-readable JSON output
 ```
 
@@ -396,11 +412,11 @@ The verifier performs these checks:
 Pretty-prints the YAML answers into a readable numbered report suitable for direct presentation.
 
 ```
-nix develop "path:SKILL_DIR" -c python3 SKILL_DIR/format-answers.py answers.yaml
+nix develop "path:SKILL_DIR" -c python3 SKILL_DIR/format-answers.py answers/<slug>.yml
   → [1] (p.12) Claim text
         → "verbatim quote" (p.12)
 
-nix develop "path:SKILL_DIR" -c python3 SKILL_DIR/format-answers.py answers.yaml --no-citations
+nix develop "path:SKILL_DIR" -c python3 SKILL_DIR/format-answers.py answers/<slug>.yml --no-citations
   → [1] (p.12) Claim text  (without inline quotes)
 ```
 
@@ -424,3 +440,6 @@ Do not reference `nixpkgs#` derivations directly. Always use `nix develop "path:
 10. **One citation for a multi-part claim** — If your claim has multiple assertions that come from different passages, include all those passages as separate citations under the same claim.
 11. **Forgetting the concatenation field** — The `concatenation` at the top level must exactly equal all claims joined with `". "`. Forgetting it or getting it wrong = deterministic FAIL.
 12. **Claims that don't form a coherent paragraph** — The concatenation of all claims must read as a sensible, self-contained answer. If claims jump between topics without establishing concepts, the Stage 3 verifier will FAIL and you'll need to revise.
+13. **Not creating answers/ directory** — Run `mkdir -p answers` at the start. Writing to a non-existent directory will fail.
+14. **Overwriting a prior-session answer file** — Check if `answers/<slug>.yml` exists before writing. If it does and you didn't create it this session, use `<slug>-N.yml`.
+15. **Not reusing prior claims** — Check existing `answers/*.yml` files during search. If a prior answer has relevant, well-supported claims, reuse them instead of starting from scratch.

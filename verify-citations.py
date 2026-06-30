@@ -6,7 +6,7 @@ Checks that every citation text appears verbatim in the source PDF's
 extracted text. Uses string matching — no LLM involved.
 
 Usage:
-  nix develop "path:SKILL_DIR" -c python3 SKILL_DIR/verify-citations.py answers.yaml
+  nix develop "path:SKILL_DIR" -c python3 SKILL_DIR/verify-citations.py answers/<slug>.yml
 
 YAML input format:
   question: "..."
@@ -155,13 +155,12 @@ def main():
     )
     parser.add_argument("yaml", help="YAML file with claims and citations")
     parser.add_argument("--pdf-dir", default=".",
-                        help="Directory containing PDFs and cache files")
+                        help="Directory containing PDFs and cache files "
+                             "(default: current working directory)")
     parser.add_argument("--format", choices=["table", "json", "summary"],
                         default="table", help="Output format")
 
     args = parser.parse_args()
-    if args.pdf_dir == ".":
-        args.pdf_dir = os.path.dirname(os.path.abspath(args.yaml))
     data = load_yaml(args.yaml)
 
     total = 0

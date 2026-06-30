@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Formats answers.yaml into footnote-style output.
+Formats answers YAML (e.g. answers/<slug>.yml) into footnote-style output.
 
 Output format:
   Question text
@@ -14,7 +14,7 @@ Output format:
   [3] "verbatim quote" (p.5)  — file.pdf
 
 Usage:
-  nix develop "path:SKILL_DIR" -c python3 SKILL_DIR/format-answers.py answers.yaml
+  nix develop "path:SKILL_DIR" -c python3 SKILL_DIR/format-answers.py answers/<slug>.yml
 """
 
 import argparse
@@ -30,7 +30,7 @@ def load_yaml(path: str) -> dict:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Format answers.yaml as footnote-style text"
+        description="Format answers YAML (e.g. answers/<slug>.yml) as footnote-style text"
     )
     parser.add_argument("yaml", help="YAML file with claims and citations")
     args = parser.parse_args()
