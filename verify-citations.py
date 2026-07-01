@@ -20,6 +20,7 @@ YAML input format:
 """
 
 import argparse
+import difflib
 import json
 import os
 import re
@@ -91,6 +92,43 @@ def normalize_text(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def _find_closest_matches(norm_citation: str, chunks_on_page: list, n: int = 3, cutoff: float = 0.3) -> list:
+    """Find the closest-matching text spans for a failed citation using sliding windows."""
+    if not norm_citation:
+        return []
+    citation_len = len(norm_citation)
+    window_size = max(citation_len * 2, citation_len + 100)
+    best = []
+    seen = set()
+    for chunk in chunks_on_page:
+        norm_chunk = normalize_text(chunk["text"])
+        if not norm_chunk:
+            continue
+        # Slide a window through the chunk, comparing to the citation
+        step = max(1, window_size // 4)
+        for start in range(0, len(norm_chunk), step):
+            window = norm_chunk[start:start + window_size]
+            if not window or window in seen:
+                continue
+            seen.add(window)
+            ratio = difflib.SequenceMatcher(None, norm_citation, window).ratio()
+            if ratio >= cutoff:
+                # Store the original (non-normalized) text for display
+                orig_start = max(0, start - 10)
+                orig_text = chunk["text"][orig_start:orig_start + window_size + 20]
+                best.append((ratio, orig_text))
+    best.sort(key=lambda x: -x[0])
+    # Deduplicate by keeping only the best entry per similarity bucket
+    unique = []
+    seen_ratios = set()
+    for ratio, txt in best:
+        bucket = round(ratio, 2)
+        if bucket not in seen_ratios:
+            seen_ratios.add(bucket)
+            unique.append((ratio, txt))
+    return unique[:n]
+
+
 def check_citation(citation_text: str, page: int, cache: dict) -> dict:
     chunks_on_page = [c for c in cache["chunks"] if c["page"] == page]
 
@@ -137,7 +175,40 @@ def check_citation(citation_text: str, page: int, cache: dict) -> dict:
     if artifact_citation in artifact_page:
         return {"found": True, "method": "artifact_stripped"}
 
-    return {"found": False, "reason": "Citation text not found on specified page"}
+    # Fallback: find closest-matching chunks to help the user debug
+    suggestions = _find_closest_matches(norm_citation, chunks_on_page)
+    reason = "Citation text not found on specified page"
+    if suggestions:
+        parts = []
+        for sim, txt in suggestions:
+            preview = txt[:120].replace("\n", " ")
+            parts.append(f"{preview} (sim: {sim:.2f})")
+        reason += ". Closest matches:\n  " + "\n  ".join(parts)
+    return {"found": False, "reason": reason, "suggestions": suggestions}
+
+
+def _find_first_diff(expected: str, actual: str) -> dict:
+    """Return detailed debug info about the first difference between two strings."""
+    result = {
+        "expected_length": len(expected),
+        "actual_length": len(actual),
+    }
+    for i in range(min(len(expected), len(actual))):
+        if expected[i] != actual[i]:
+            result["index"] = i
+            result["expected_char"] = expected[i]
+            result["expected_ord"] = ord(expected[i])
+            result["actual_char"] = actual[i]
+            result["actual_ord"] = ord(actual[i])
+            return result
+    if len(expected) != len(actual):
+        result["index"] = min(len(expected), len(actual))
+        result["expected_char"] = expected[result["index"]] if result["index"] < len(expected) else ""
+        result["actual_char"] = actual[result["index"]] if result["index"] < len(actual) else ""
+        result["expected_ord"] = ord(result["expected_char"]) if result["expected_char"] else None
+        result["actual_ord"] = ord(result["actual_char"]) if result["actual_char"] else None
+        return result
+    return {}
 
 
 def check_concatenation(data: dict) -> dict:
@@ -146,7 +217,38 @@ def check_concatenation(data: dict) -> dict:
     actual = data.get("concatenation", "")
     if actual == expected:
         return {"found": True}
-    return {"found": False, "reason": f"Expected: '{expected}', got: '{actual}'"}
+    result = {"found": False, "expected": expected, "actual": actual}
+    diff = _find_first_diff(expected, actual)
+    result.update(diff)
+    index = diff.get("index")
+    if index is not None and "expected_char" in diff and "actual_char" in diff:
+        ec, ac = diff["expected_char"], diff["actual_char"]
+        eo = diff.get("expected_ord")
+        ao = diff.get("actual_ord")
+        ec_repr = repr(ec) if ec else "end-of-string"
+        ac_repr = repr(ac) if ac else "end-of-string"
+        eo_str = f" (U+{eo:04X})" if eo is not None else ""
+        ao_str = f" (U+{ao:04X})" if ao is not None else ""
+        if ec == "":
+            result["reason"] = (
+                f"Length mismatch (expected={len(expected)}, actual={len(actual)}). "
+                f"Extra trailing content starts at index {index}: {repr(actual[index:index+50])}"
+            )
+        elif ac == "":
+            result["reason"] = (
+                f"Length mismatch (expected={len(expected)}, actual={len(actual)}). "
+                f"Missing trailing content from index {index}: {repr(expected[index:index+50])}"
+            )
+        else:
+            result["reason"] = (
+                f"First diff at index {index}: "
+                f"expected {ec_repr}{eo_str}, got {ac_repr}{ao_str}"
+            )
+    else:
+        result["reason"] = (
+            f"Length mismatch (expected={len(expected)}, actual={len(actual)})"
+        )
+    return result
 
 
 def main():
@@ -157,6 +259,8 @@ def main():
     parser.add_argument("--pdf-dir", default=".",
                         help="Directory containing PDFs and cache files "
                              "(default: current working directory)")
+    parser.add_argument("-v", "--verbose", action="store_true",
+                        help="Show match methods, closest-match hints, and detailed diffs")
     parser.add_argument("--format", choices=["table", "json", "summary"],
                         default="table", help="Output format")
 
@@ -185,6 +289,7 @@ def main():
             cache_path = os.path.join(args.pdf_dir, source)
             cache = load_pdf_cache(cache_path)
 
+            result = None
             if cache is None:
                 status = "FAIL"
                 reason = f"Cache not found for {source}"
@@ -192,7 +297,7 @@ def main():
             else:
                 result = check_citation(cit_text, page, cache)
                 if result["found"]:
-                    status = "PASS"
+                    status = f"PASS ({result['method']})" if args.verbose else "PASS"
                     passed += 1
                 else:
                     status = "FAIL"
@@ -205,6 +310,10 @@ def main():
             if args.format == "table":
                 extra = f" ({reason})" if status == "FAIL" else ""
                 print(f"{short_claim:<60} {short_cit:<50} {page:<6} {status:<10}{extra}")
+                if args.verbose and status == "FAIL" and result and result.get("suggestions"):
+                    for sim, txt in result["suggestions"]:
+                        preview = txt[:120].replace("\n", " ")
+                        print(f"{'':>60} {'':>50} {'':>6}   Suggested: {preview} (sim: {sim:.2f})")
             elif args.format == "json":
                 results.append({
                     "claim": claim,
@@ -229,6 +338,21 @@ def main():
     if args.format == "table":
         concat_extra = f" ({reason})" if concat_status == "FAIL" else ""
         print(f"{'CONCATENATION':<60} {'':<50} {'':<6} {concat_status:<10}{concat_extra}")
+        if concat_status == "FAIL" and args.verbose:
+            exp = concat_result.get("expected", "")
+            act = concat_result.get("actual", "")
+            first_diff = concat_result.get("index")
+            if first_diff is not None:
+                ctx_start = max(0, first_diff - 40)
+                ctx_end = min(len(exp), first_diff + 40)
+                if ctx_start > 0:
+                    print(f"{'':>60} {'':>50} {'':>6} expected: ...{repr(exp[ctx_start:ctx_end])}...")
+                    print(f"{'':>60} {'':>50} {'':>6} actual:   ...{repr(act[ctx_start:ctx_end])}...")
+                    marker = " " * (8 + len(repr(exp[ctx_start:first_diff]))) + "^"
+                    print(f"{'':>60} {'':>50} {'':>6} {'':>8}{marker}")
+                else:
+                    print(f"{'':>60} {'':>50} {'':>6} expected: {repr(exp[:80])}")
+                    print(f"{'':>60} {'':>50} {'':>6} actual:   {repr(act[:80])}")
     elif args.format == "json":
         results.append({
             "claim": "CONCATENATION",
