@@ -245,7 +245,7 @@ Run: `nix develop "path:SKILL_DIR" -c python3 SKILL_DIR/verify-citations.py answ
 
 ### Stage 2: Semantic Checker Sub-Agent
 
-For each claim with ALL its associated citations that pass deterministic verification, dispatch a single checker sub-agent via the Task tool. The checker evaluates whether the **synthesis** of all source texts implies the claim.
+For each claim with ALL its associated citations that pass deterministic verification, dispatch a single checker sub-agent via the Task tool. The checker first evaluates whether any source text is too short or fragmentary to be reliably cited (out-of-context check), then evaluates whether the **synthesis** of all source texts implies the claim.
 
 ### Stage 3: Coherence & Completeness Sub-Agent
 
@@ -269,11 +269,27 @@ SOURCE_TEXTS:
     page: <page number>
     source: <filename>
 
+PRELIMINARY OUT-OF-CONTEXT CHECK: Before assessing implication,
+examine each SOURCE_TEXT. A source is meant to be a longer piece of
+text from which a claim can be extracted. If any SOURCE_TEXT is so
+short or fragmentary that it risks being taken out of context (i.e.,
+the surrounding context could materially change its meaning), reject
+on those grounds. Consider: could this text be interpreted
+differently with more surrounding context? If yes, that source text
+is unreliable.
+
+If all SOURCE_TEXTS pass the preliminary check, proceed:
+
 Does the SYNTHESIS of all SOURCE_TEXTS strictly imply CLAIM?
 - YES: Respond with "PASS"
+- FAIL (out-of-context): Respond with "FAIL: Source text too short,
+  taken out of context — <explain why>"
 - NO: Respond with "FAIL: <explain what was added or cannot be inferred>"
 
 Rules:
+0. OUT-OF-CONTEXT CHECK (takes priority over all other rules): If any
+   source text is too short or fragmentary to reliably stand alone,
+   reject with FAIL. Do not proceed to implication checking.
 1. Direct logical inference (arithmetic, boolean, set membership) is allowed.
 2. Inference across sources is allowed: if source A says X and source B
    says Y, you may combine them to conclude X+Y implies the claim.
