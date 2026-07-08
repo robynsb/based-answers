@@ -266,13 +266,11 @@ SOURCE_TEXTS:
   - <verbatim quote from source 2>
 
 PRELIMINARY OUT-OF-CONTEXT CHECK: Before assessing implication,
-examine each SOURCE_TEXT. A source is meant to be a longer piece of
-text from which a claim can be extracted. If any SOURCE_TEXT is so
-short or fragmentary that it risks being taken out of context (i.e.,
-the surrounding context could materially change its meaning), reject
-on those grounds. Consider: could this text be interpreted
-differently with more surrounding context? If yes, that source text
-is unreliable.
+examine each SOURCE_TEXT. Every source must include three parts:
+some text immediately before the claim-relevant portion, the text
+directly related to the claim, and some text immediately after.
+If any SOURCE_TEXT lacks surrounding context on both sides — if it
+is just the bare snippet — reject it as taken out of context.
 
 If all SOURCE_TEXTS pass the preliminary check, proceed:
 
@@ -283,9 +281,11 @@ Does the SYNTHESIS of all SOURCE_TEXTS strictly imply CLAIM?
 - NO: Respond with "FAIL: <explain what was added or cannot be inferred>"
 
 Rules:
-0. OUT-OF-CONTEXT CHECK (takes priority over all other rules): If any
-   source text is too short or fragmentary to reliably stand alone,
-   reject with FAIL. Do not proceed to implication checking.
+0. OUT-OF-CONTEXT CHECK (takes priority over all other rules): Every
+   source must include text before, the claim-relevant portion, and
+   text after. If any source is just the bare snippet without
+   surrounding context on both sides, reject with FAIL. Do not
+   proceed to implication checking.
 1. Direct logical inference (arithmetic, boolean, set membership) is allowed.
 2. Inference across sources is allowed: if source A says X and source B
    says Y, you may combine them to conclude X+Y implies the claim.
