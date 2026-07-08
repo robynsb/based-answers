@@ -262,12 +262,8 @@ You have NO other context.
 
 CLAIM: <one sentence / atomic fact>
 SOURCE_TEXTS:
-  - text: <verbatim quote from source 1>
-    page: <page number>
-    source: <filename>
-  - text: <verbatim quote from source 2>
-    page: <page number>
-    source: <filename>
+  - <verbatim quote from source 1>
+  - <verbatim quote from source 2>
 
 PRELIMINARY OUT-OF-CONTEXT CHECK: Before assessing implication,
 examine each SOURCE_TEXT. A source is meant to be a longer piece of
@@ -302,7 +298,7 @@ Rules:
 
 The Stage 2 checker sub-agent receives ONLY:
 - The claim text
-- All source quote texts with page numbers and filenames
+- All source quote texts (verbatim, no metadata)
 - The rubric above
 
 NOT the full PDF, NOT the question, NOT other claims.
