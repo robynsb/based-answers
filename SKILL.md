@@ -27,109 +27,54 @@ nix develop "path:.opencode/skills/citation-grounded-qa" -c python3 .opencode/sk
 
 ## Workflow
 
-```
-┌──────────────────────────────────────────────────┐
-│ 0. SETUP                                          │
-│    mkdir -p answers                               │
-│    Derive <slug> from question (kebab-case)       │
-│    Check for prior-session file at that slug      │
-└──────────────────────────────────────────────────┘
-         │
-         ▼
-┌──────────────────────────────────────────────────┐
-│ 1. INDEX                                          │
-│    nix develop "path:SKILL_DIR" -c python3        │
-│    SKILL_DIR/pdf-search.py <source> info          │
-│    for each source file                           │
-│    → Understand structure, estimate token budget  │
-└──────────────────────────────────────────────────┘
-         │
-         ▼
-┌──────────────────────────────────────────────────┐
-│ 2. SEARCH                                         │
-│    nix develop "path:SKILL_DIR" -c python3        │
-│    SKILL_DIR/pdf-search.py <source> search        │
-│    "<term>"                                       │
-│    → Returns matching paragraph chunks + pages    │
-│    Iterate across all sources for the question    │
-│    Check answers/ for existing .yml files —       │
-│    reuse supported claims from prior sessions     │
-│    Vary search terms to cover all aspects         │
-└──────────────────────────────────────────────────┘
-         │
-         ▼
-┌──────────────────────────────────────────────────┐
-│ 3. RETRIEVE                                       │
-│    nix develop "path:SKILL_DIR" -c python3        │
-│    SKILL_DIR/pdf-search.py <source> get <pages>  │
-│    → Full page text for answer formulation        │
-│    Retrieve only pages with relevant matches      │
-└──────────────────────────────────────────────────┘
-         │
-         ▼
-┌──────────────────────────────────────────────────┐
-│ 4. ANSWER (as YAML)                               │
-│    Write answers/<slug>.yml with claims+          │
-│    citations (see Rule 2 for structure)           │
-│    If file from prior session exists, use         │
-│    <slug>-N.yml instead (N = lowest free)         │
-└──────────────────────────────────────────────────┘
-         │
-         ▼
-┌──────────────────────────────────────────────────┐
-│ 5. DETERMINISTIC VERIFICATION                     │
-│    nix develop "path:SKILL_DIR" -c python3        │
-│    SKILL_DIR/verify-citations.py                  │
-│      answers/<slug>.yml                           │
-│    → Checks every citation text exists verbatim   │
-│      in the source PDF (string match, no LLM)     │
-│    → Also checks concatenation is exact join      │
-│      of all claims with ". "                      │
-│    → Fails if any text not found on its page      │
-│      or concatenation is wrong                    │
-└──────────────────────────────────────────────────┘
-         │
-         ▼
-┌──────────────────────────────────────────────────┐
-│ 6. SEMANTIC VERIFICATION                          │
-│    For each claim with ALL its citations:         │
-│      Use Task tool to dispatch checker sub-agent  │
-│      with: CLAIM, all SOURCE_TEXTS, PAGES         │
-│      → Does the SYNTHESIS of all sources imply    │
-│        the CLAIM?                                 │
-└──────────────────────────────────────────────────┘
-         │
-    ┌────┴──────────┐
-    ▼               ▼
- ALL PASS      ANY FAIL
-    │               │
-    │               ▼
-    │    (go to step 2, max 3 rounds)
-    │
-    ▼
-┌──────────────────────────────────────────────────┐
-│ 7. COHERENCE & COMPLETENESS VERIFICATION          │
-│    Dispatch sub-agent with QUESTION and           │
-│    CONCATENATION of all claims:                   │
-│    → Is the concatenation a sensible paragraph    │
-│      where concepts are established?              │
-│    → Does it totally answer the question?         │
-└──────────────────────────────────────────────────┘
-         │
-    ┌────┴──────────┐
-    ▼               ▼
-  PASS           FAIL
-    │               │
-    │               ▼
-    │    (go to step 2, max 3 rounds)
-    │
-    ▼
-┌──────────────────────────────────────────────────┐
-│ 8. OUTPUT                                         │
-│    Final answer as answers/<slug>.yml (verified).│
-│    Or: "Unable to answer after 3 rounds."          │
-└──────────────────────────────────────────────────┘
-```
+### 0. Setup
+- `mkdir -p answers`
+- Derive `<slug>` from question (kebab-case)
+- Check for prior-session file at that slug
+
+### 1. Index
+- Run `nix develop "path:SKILL_DIR" -c python3 SKILL_DIR/pdf-search.py <source> info` for each source file
+- Understand structure, estimate token budget
+
+### 2. Search
+- Run `nix develop "path:SKILL_DIR" -c python3 SKILL_DIR/pdf-search.py <source> search "<term>"`
+- Iterate across all sources for the question
+- Check `answers/` for existing `.yml` files — reuse supported claims from prior sessions
+- Vary search terms to cover all aspects
+- → Returns matching paragraph chunks + pages
+
+### 3. Retrieve
+- Run `nix develop "path:SKILL_DIR" -c python3 SKILL_DIR/pdf-search.py <source> get <pages>`
+- Retrieve only pages with relevant matches
+- → Full page text for answer formulation
+
+### 4. Answer (as YAML)
+- Write `answers/<slug>.yml` with claims + citations (see Rule 2 for structure)
+- If file from prior session exists, use `<slug>-N.yml` instead (N = lowest free)
+
+### 5. Deterministic Verification
+- Run `nix develop "path:SKILL_DIR" -c python3 SKILL_DIR/verify-citations.py answers/<slug>.yml`
+- Checks every citation text exists verbatim in the source PDF (string match, no LLM)
+- Also checks concatenation is exact join of all claims with ". "
+- Fails if any text not found on its page or concatenation is wrong
+
+### 6. Semantic Verification
+- For each claim with ALL its citations:
+  - Use Task tool to dispatch checker sub-agent with: CLAIM, all SOURCE_TEXTS
+  - Does the SYNTHESIS of all sources imply the CLAIM?
+- If **ALL PASS** → proceed to step 7
+- If **ANY FAIL** → return to step 2 (Search), max 3 rounds total
+
+### 7. Coherence & Completeness Verification
+- Dispatch sub-agent with QUESTION and CONCATENATION of all claims
+  - Is the concatenation a sensible paragraph where concepts are established?
+  - Does it totally answer the question?
+- If **PASS** → proceed to step 8
+- If **FAIL** → return to step 2 (Search), max 3 rounds total
+
+### 8. Output
+- Final answer as `answers/<slug>.yml` (verified)
+- Or: "Unable to answer after 3 rounds."
 
 ## Core Rules
 
