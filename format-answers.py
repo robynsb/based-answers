@@ -1,23 +1,16 @@
 #!/usr/bin/env python3
 """
-Formats answers YAML (e.g. answers/<slug>.yml) into footnote-style output.
-
-Output format:
-  Question text
-
-  Claim text [1].
-  Second claim text [2,3].
-
-  References:
-  [1] "verbatim quote" (p.12) — file.pdf
-  [2] "verbatim quote" (p.5)  — file.pdf
-  [3] "verbatim quote" (p.5)  — file.pdf
+Generates a self-contained HTML answer page with PDF page previews.
 
 Usage:
   nix develop "path:SKILL_DIR" -c python3 SKILL_DIR/format-answers.py answers/<slug>.yml
+
+Output: answers/<slug>.html (printed absolute path to stdout)
 """
 
 import argparse
+import json
+import os
 import sys
 from pathlib import Path
 
@@ -28,56 +21,171 @@ def load_yaml(path: str) -> dict:
         return _yaml.safe_load(f)
 
 
+def load_cache(source_name: str, yaml_dir: Path) -> dict | None:
+    candidates = [
+        yaml_dir / source_name,
+        Path(source_name),
+    ]
+    for p in candidates:
+        resolved = p.resolve()
+        cache = resolved.parent / (resolved.name + ".json")
+        if cache.exists():
+            with open(cache) as f:
+                return json.load(f)
+    return None
+
+
+def get_source_abs_path(source_name: str, yaml_dir: Path) -> str:
+    candidates = [
+        yaml_dir / source_name,
+        Path(source_name),
+    ]
+    for p in candidates:
+        if p.exists():
+            return str(p.resolve())
+    return source_name
+
+
+def ensure_cache_has_pages_data(pdf_path: str, source_name: str, yaml_dir: Path):
+    cache_path = (yaml_dir / source_name).resolve()
+    cache_file = cache_path.parent / (cache_path.name + ".json")
+    if not cache_file.exists():
+        return
+    try:
+        with open(cache_file) as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return
+    if "pages_data" in data:
+        return
+    from pdf_search import extract_pages_with_coords
+    try:
+        pages = extract_pages_with_coords(str(pdf_path))
+        data["pages_data"] = pages
+        with open(cache_file, "w") as f:
+            json.dump(data, f, indent=2)
+    except Exception:
+        pass
+
+
+def get_highlights_for_text(pages_data: dict, page: int, text: str) -> tuple[list[dict], float, float]:
+    page_key = str(page)
+    page_info = pages_data.get(page_key, {})
+    spans = page_info.get("spans", [])
+    page_w = page_info.get("page_width", 1)
+    page_h = page_info.get("page_height", 1)
+    matching = []
+    for s in spans:
+        if text in s["text"]:
+            matching.append({"bbox": s["bbox"]})
+    if not matching:
+        norm = text.replace("\n", " ").strip()
+        for s in spans:
+            if norm in s["text"].replace("\n", " ").strip():
+                matching.append({"bbox": s["bbox"]})
+    if not matching:
+        norm = text.replace("\n", " ").strip().lower()
+        for s in spans:
+            if norm in s["text"].replace("\n", " ").strip().lower():
+                matching.append({"bbox": s["bbox"]})
+    return matching, page_w, page_h
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description="Format answers YAML (e.g. answers/<slug>.yml) as footnote-style text"
+        description="Generate HTML answer page with PDF previews"
     )
     parser.add_argument("yaml", help="YAML file with claims and citations")
     args = parser.parse_args()
 
-    data = load_yaml(args.yaml)
-    q = data.get("question", "").strip()
+    from jinja2 import Environment, FileSystemLoader
+
+    yaml_path = Path(args.yaml)
+    yaml_dir = yaml_path.parent
+    data = load_yaml(str(yaml_path))
+
+    question = data.get("question", "").strip()
     answers = data.get("answers", [])
+    unable = not answers
 
-    if not answers:
-        print(q)
-        print()
-        print("Unable to answer this question given the sources.")
-        return
-
-    print(q)
-    print()
-
-    refs = []
+    all_refs = []
     ref_counter = 0
+    rendered_answers = []
+    errors = []
 
-    for answer in answers:
+    skill_dir = Path(__file__).parent.resolve()
+
+    for a_idx, answer in enumerate(answers):
         claim = answer.get("claim", "").strip()
-        citations = answer.get("citations", [])
-
         if not claim:
             continue
+        citations = answer.get("citations", [])
 
-        numbers = []
+        rendered_citations = []
         for cit in citations:
             ref_counter += 1
-            numbers.append(str(ref_counter))
-            refs.append({
+            text = cit.get("text", "").strip()
+            page = cit.get("page", 0)
+            source_name = cit.get("source", "")
+
+            source_path = get_source_abs_path(source_name, yaml_dir)
+            cache = load_cache(source_name, yaml_dir)
+
+            highlights = []
+            page_w = 0
+            page_h = 0
+
+            if cache:
+                pages_data = cache.get("pages_data")
+                if not pages_data:
+                    ensure_cache_has_pages_data(source_path, source_name, yaml_dir)
+                    cache = load_cache(source_name, yaml_dir)
+                    if cache:
+                        pages_data = cache.get("pages_data", {})
+                if pages_data:
+                    highlights, page_w, page_h = get_highlights_for_text(pages_data, page, text)
+            else:
+                errors.append(f"Cache not found for {source_name} -- PDF preview unavailable")
+
+            all_refs.append({
                 "num": ref_counter,
-                "text": cit.get("text", "").strip(),
-                "page": cit.get("page", "?"),
-                "source": cit.get("source", ""),
+                "text": text,
+                "page": page,
+                "source_name": source_name,
+                "source_path": source_path,
+                "highlights": highlights,
+                "highlights_json": json.dumps(highlights),
+                "page_width": page_w,
+                "page_height": page_h,
             })
 
-        print(f"  {claim.rstrip('.')} [{','.join(numbers)}].")
+            rendered_citations.append({
+                "num": ref_counter,
+                "source_path": source_path,
+                "page": page,
+            })
 
-    print()
-    print("  References:")
-    for r in refs:
-        src = r["source"].rsplit("/", 1)[-1] if "/" in r["source"] else r["source"]
-        print(f"  [{r['num']}] \"{r['text']}\" (p.{r['page']}) \u2014 {src}")
+        rendered_answers.append({
+            "number": a_idx + 1,
+            "claim": claim,
+            "citations": rendered_citations,
+        })
 
-    print()
+    env = Environment(loader=FileSystemLoader(str(skill_dir)))
+    template = env.get_template("answer-template.html")
+
+    html = template.render(
+        question=question,
+        answers=rendered_answers,
+        all_references=all_refs,
+        unable=unable,
+        errors=errors if errors else None,
+    )
+
+    out_path = yaml_dir / (yaml_path.stem + ".html")
+    out_path.write_text(html, encoding="utf-8")
+
+    print(out_path.resolve())
 
 
 if __name__ == "__main__":
