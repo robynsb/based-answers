@@ -366,16 +366,23 @@ The verifier performs these checks:
 
 ### format-answers.py
 
-Pretty-prints the YAML answers into a readable numbered report suitable for direct presentation.
+Generates a self-contained HTML page presenting the answer with styled citations,
+PDF.js page previews (with highlighted text), and clickable links that open the
+source PDF at the cited page. Writes to `answers/<slug>.html` and prints the absolute
+path to stdout.
 
 ```
 nix develop "path:SKILL_DIR" -c python3 SKILL_DIR/format-answers.py answers/<slug>.yml
-  → [1] (p.12) Claim text
-        → "verbatim quote" (p.12)
-
-nix develop "path:SKILL_DIR" -c python3 SKILL_DIR/format-answers.py answers/<slug>.yml --no-citations
-  → [1] (p.12) Claim text  (without inline quotes)
 ```
+
+The output is a single absolute path to the HTML file &mdash; CMD+CLICK it to open.
+
+The HTML page features:
+- Auto dark/light mode
+- Numbered claims with clickable citation superscripts
+- Reference cards with verbatim quotes and source metadata
+- PDF.js rendered page thumbnails with the cited text highlighted in yellow
+- Fallback graceful degradation when PDF cache or PDF.js is unavailable
 
 ### Environment
 
