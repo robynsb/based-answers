@@ -75,7 +75,7 @@ nix develop "path:.opencode/skills/citation-grounded-qa" -c python3 .opencode/sk
 ### 8. Output
 - Final answer as `answers/<slug>.yml` (verified)
 - Run `nix develop "path:SKILL_DIR" -c python3 SKILL_DIR/format-answers.py answers/<slug>.yml` to generate an HTML answer page with styled citations and PDF page previews
-- CMD+CLICK the printed path to open the HTML in your browser
+- Immediately open it: `open $(nix develop "path:SKILL_DIR" -c python3 SKILL_DIR/format-answers.py answers/<slug>.yml)`
 - Or: "Unable to answer after 3 rounds."
 
 ## Core Rules
@@ -378,11 +378,11 @@ path to stdout.
 nix develop "path:SKILL_DIR" -c python3 SKILL_DIR/format-answers.py answers/<slug>.yml
 ```
 
-The output is a single absolute path to the HTML file &mdash; CMD+CLICK it to open.
+Prints the absolute path to the HTML file. Use `open` to open it in your browser.
 
 The HTML page features:
 - Auto dark/light mode
-- Numbered claims with clickable citation superscripts
+- Concatenation with clickable citation superscripts
 - Reference cards with verbatim quotes and source metadata
 - PDF.js rendered page thumbnails with the cited text highlighted in yellow
 - Fallback graceful degradation when PDF cache or PDF.js is unavailable
