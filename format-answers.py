@@ -10,7 +10,6 @@ Output: answers/<slug>.html (printed absolute path to stdout)
 
 import argparse
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -35,7 +34,7 @@ def load_cache(source_name: str, yaml_dir: Path) -> dict | None:
     return None
 
 
-def get_source_abs_path(source_name: str, yaml_dir: Path) -> str:
+def get_source_abs_path(source_name: str, yaml_dir: Path) -> str | None:
     candidates = [
         yaml_dir / source_name,
         Path(source_name),
@@ -43,7 +42,7 @@ def get_source_abs_path(source_name: str, yaml_dir: Path) -> str:
     for p in candidates:
         if p.exists():
             return str(p.resolve())
-    return source_name
+    return None
 
 
 def ensure_cache_has_pages_data(pdf_path: str, source_name: str, yaml_dir: Path):
@@ -58,7 +57,13 @@ def ensure_cache_has_pages_data(pdf_path: str, source_name: str, yaml_dir: Path)
         return
     if "pages_data" in data:
         return
-    from pdf_search import extract_pages_with_coords
+    skill_dir = str(Path(__file__).parent.resolve())
+    if skill_dir not in sys.path:
+        sys.path.insert(0, skill_dir)
+    try:
+        from pdf_search import extract_pages_with_coords
+    except ImportError:
+        return
     try:
         pages = extract_pages_with_coords(str(pdf_path))
         data["pages_data"] = pages
@@ -99,9 +104,13 @@ def main():
     args = parser.parse_args()
 
     from jinja2 import Environment, FileSystemLoader
+    from jinja2.exceptions import TemplateNotFound
 
     yaml_path = Path(args.yaml)
     yaml_dir = yaml_path.parent
+    if not yaml_path.exists():
+        print(f"Error: YAML file not found: {yaml_path}", file=sys.stderr)
+        sys.exit(1)
     data = load_yaml(str(yaml_path))
 
     question = data.get("question", "").strip()
@@ -129,6 +138,12 @@ def main():
             source_name = cit.get("source", "")
 
             source_path = get_source_abs_path(source_name, yaml_dir)
+            if source_path is None:
+                source_path = source_name
+                msg = f"Warning: Source file not found for {source_name}"
+                errors.append(msg)
+                print(msg, file=sys.stderr)
+
             cache = load_cache(source_name, yaml_dir)
 
             highlights = []
@@ -145,7 +160,9 @@ def main():
                 if pages_data:
                     highlights, page_w, page_h = get_highlights_for_text(pages_data, page, text)
             else:
-                errors.append(f"Cache not found for {source_name} -- PDF preview unavailable")
+                msg = f"Warning: Cache not found for {source_name} -- PDF preview unavailable"
+                errors.append(msg)
+                print(msg, file=sys.stderr)
 
             all_refs.append({
                 "num": ref_counter,
@@ -171,16 +188,22 @@ def main():
             "citations": rendered_citations,
         })
 
-    env = Environment(loader=FileSystemLoader(str(skill_dir)))
-    template = env.get_template("answer-template.html")
-
-    html = template.render(
-        question=question,
-        answers=rendered_answers,
-        all_references=all_refs,
-        unable=unable,
-        errors=errors if errors else None,
-    )
+    try:
+        env = Environment(loader=FileSystemLoader(str(skill_dir)))
+        template = env.get_template("answer-template.html")
+        html = template.render(
+            question=question,
+            answers=rendered_answers,
+            all_references=all_refs,
+            unable=unable,
+            errors=errors if errors else None,
+        )
+    except TemplateNotFound:
+        print("Error: Template 'answer-template.html' not found in skill directory", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"Error rendering template: {e}", file=sys.stderr)
+        sys.exit(1)
 
     out_path = yaml_dir / (yaml_path.stem + ".html")
     out_path.write_text(html, encoding="utf-8")
