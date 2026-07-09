@@ -134,6 +134,13 @@ def write_context(slug: str, question: str, pdf_info: list[dict], rounds: list[d
         lines.append(f"- {info['file']} (pages: {info['pages']}, chunks: {info['chunks']}, ~{info['tokens']}K tokens)")
         lines.append(f"  Full path: {info['abspath']}")
 
+    # List existing answer files the agent can reuse
+    existing = sorted(Path("answers").glob("*.yml"))
+    if existing:
+        lines += ["", "## Existing Answer Files (read with `read` tool to reuse claims)"]
+        for f in existing:
+            lines.append(f"- {f.name}")
+
     lines += [
         "",
         "## Instructions",
