@@ -14,6 +14,7 @@ Must be run from the skill directory (nix develop handles dependencies).
 """
 
 import argparse
+import json
 import os
 import re
 import shutil
@@ -27,6 +28,7 @@ SKILL_DIR = Path(__file__).parent.resolve()
 AGENT_NAME = "citation-searcher"
 AGENT_SRC = SKILL_DIR / f"{AGENT_NAME}.md"
 AGENT_DST = Path.home() / ".config/opencode/agents" / f"{AGENT_NAME}.md"
+TOOLS_DIR = Path.home() / ".config/opencode/tools"
 MAX_ROUNDS = 3
 
 
@@ -123,16 +125,12 @@ def write_context(slug: str, question: str, pdf_info: list[dict], rounds: list[d
         "Key rules:",
         "- Every claim needs a verbatim citation with page number",
         "- No world knowledge",
-        "- Write to `answers/<slug>.yml` (slug from this file's name)",
-        "- Always run verify-citations.py to check before exiting:",
-        f"  `nix develop \"path:{SKILL_DIR}\" -c python3 {SKILL_DIR / 'verify-citations.py'} answers/<slug>.yml`",
+        "- Use `pdf_search` tool (action: search/get/info) to explore PDFs",
+        "- Write answer to `answers/<slug>.yml`",
+        "- Use `verify_citations` tool to check your work before exiting",
         "- If you cannot find evidence, write empty YAML",
         "",
-        f"Search command: `nix develop \"path:{SKILL_DIR}\" -c python3 {SKILL_DIR / 'pdf-search.py'} <pdf_path> search \"<query>\"`",
-        f"Get page command: `nix develop \"path:{SKILL_DIR}\" -c python3 {SKILL_DIR / 'pdf-search.py'} <pdf_path> get <page_num>`",
-        f"Info command: `nix develop \"path:{SKILL_DIR}\" -c python3 {SKILL_DIR / 'pdf-search.py'} <pdf_path> info`",
-        f"",
-        f"## Prior Attempts & Feedback",
+        "## Prior Attempts & Feedback",
     ]
 
     if not rounds:
@@ -186,6 +184,84 @@ def install_banner(label: str):
     print(f"{'#' * 60}", flush=True)
 
 
+def install_tools():
+    TOOLS_DIR.mkdir(parents=True, exist_ok=True)
+
+    skill_dir_escaped = str(SKILL_DIR).replace("\\", "\\\\")
+    pdf_search_ts = TOOLS_DIR / "pdf-search.ts"
+    verify_citations_ts = TOOLS_DIR / "verify-citations.ts"
+
+    pdf_search_ts.write_text(f"""import {{ tool }} from "@opencode-ai/plugin"
+import {{ execSync }} from "child_process"
+
+const SKILL_DIR = {json.dumps(str(SKILL_DIR))}
+
+function run(args: string): string {{
+  try {{
+    return execSync(
+      `nix develop "path:${{SKILL_DIR}}" -c python3 ${{SKILL_DIR}}/pdf-search.py ${{args}}`,
+      {{ timeout: 60000, encoding: "utf-8" }}
+    ).trim()
+  }} catch (e: any) {{
+    return e.stdout?.trim() || e.stderr?.trim() || e.message
+  }}
+}}
+
+export default tool({{
+  description: "Search PDFs for text, retrieve full page content, or get document info",
+  args: {{
+    action: tool.schema.enum(["search", "get", "info"]).describe("Action to perform"),
+    pdf: tool.schema.string().describe("Path to the PDF file"),
+    query: tool.schema.string().optional().describe("Text to search for (required for search)"),
+    pages: tool.schema.array(tool.schema.number()).optional().describe("Page numbers to retrieve (required for get)"),
+    limit: tool.schema.number().optional().describe("Max search results (default: 10)"),
+  }},
+  async execute(args) {{
+    if (args.action === "info") {{
+      return run(`${{JSON.stringify(args.pdf)}} info`)
+    }}
+    if (args.action === "search") {{
+      if (!args.query) return "Error: query is required for search"
+      return run(`${{JSON.stringify(args.pdf)}} search ${{JSON.stringify(args.query)}} --limit ${{args.limit ?? 10}}`)
+    }}
+    if (args.action === "get") {{
+      if (!args.pages || args.pages.length === 0) return "Error: page numbers required for get"
+      return run(`${{JSON.stringify(args.pdf)}} get ${{args.pages.join(" ")}}`)
+    }}
+    return `Error: unknown action ${{args.action}}`
+  }},
+}})
+""")
+
+    verify_citations_ts.write_text(f"""import {{ tool }} from "@opencode-ai/plugin"
+import {{ execSync }} from "child_process"
+
+const SKILL_DIR = {json.dumps(str(SKILL_DIR))}
+
+export default tool({{
+  description: "Verify citations in a YAML answer file against source PDFs",
+  args: {{
+    yaml: tool.schema.string().describe("Path to the YAML answer file"),
+    pdf_dir: tool.schema.string().optional().describe("Directory containing PDFs (default: working directory)"),
+  }},
+  async execute(args) {{
+    const pdfDir = args.pdf_dir ?? "."
+    try {{
+      const result = execSync(
+        `nix develop "path:${{SKILL_DIR}}" -c python3 ${{SKILL_DIR}}/verify-citations.py --pdf-dir ${{JSON.stringify(pdfDir)}} ${{JSON.stringify(args.yaml)}}`,
+        {{ timeout: 60000, encoding: "utf-8" }}
+      ).trim()
+      return result
+    }} catch (e: any) {{
+      return e.stdout?.trim() || e.stderr?.trim() || e.message
+    }}
+  }},
+}})
+""")
+
+    print(f"Installed tools: pdf-search, verify-citations")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Citation-grounded QA pipeline orchestrator")
     parser.add_argument("question", help="Question to answer")
@@ -207,6 +283,9 @@ def main():
         print(f"Installed agent: {AGENT_DST}")
     else:
         print(f"Agent already installed: {AGENT_DST}")
+
+    # Install custom tools
+    install_tools()
 
     # Collect PDFs from args or scan working directory
     pdf_paths = args.pdfs if args.pdfs else sorted(Path(".").glob("*.pdf"))
