@@ -410,4 +410,4 @@ Do not reference `nixpkgs#` derivations directly. Always use `nix develop "path:
 13. **Not creating answers/ directory** — Run `mkdir -p answers` at the start. Writing to a non-existent directory will fail.
 14. **Overwriting a prior-session answer file** — Check if `answers/<slug>.yml` exists before writing. If it does and you didn't create it this session, use `<slug>-N.yml`.
 15. **Not reusing prior claims** — Check existing `answers/*.yml` files during search. If a prior answer has relevant, well-supported claims, reuse them instead of starting from scratch.
-16. **Forgetting to generate the HTML output** — After the YAML is verified, run `format-answers.py` to produce the final HTML answer page. The path printed to stdout is CMD+CLICKable.
+16. **Forgetting to generate the HTML output** — After the YAML is verified, run `format-answers.py` to produce the final HTML answer page. Use `open` to open it: `open $(nix develop "path:SKILL_DIR" -c python3 SKILL_DIR/format-answers.py answers/<slug>.yml)`.
