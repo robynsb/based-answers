@@ -9,6 +9,10 @@ Usage (substitute actual path for SKILL_DIR):
 
 Caches extracted text as <file.pdf>.json sidecar for fast re-use.
 Depends on PyMuPDF (provided by the skill's flake.nix).
+
+# Public API for import:
+#   extract_pages_with_coords(path) -> dict[int, dict]
+#     Extracts per-page text, spans with bounding boxes, and page dimensions.
 """
 
 import argparse
@@ -28,6 +32,30 @@ def extract_text_pymupdf(path: str) -> list[dict]:
     for i, page in enumerate(doc, start=1):
         text = page.get_text()
         pages.append({"page": i, "text": text})
+    doc.close()
+    return pages
+
+
+def extract_pages_with_coords(path: str) -> dict[int, dict]:
+    import fitz
+    doc = fitz.open(path)
+    pages = {}
+    for i, page in enumerate(doc, start=1):
+        blocks = page.get_text("dict")["blocks"]
+        spans = []
+        for block in blocks:
+            for line in block.get("lines", []):
+                for span in line["spans"]:
+                    spans.append({
+                        "text": span["text"],
+                        "bbox": [round(v, 1) for v in span["bbox"]],
+                    })
+        pages[i] = {
+            "text": page.get_text(),
+            "spans": spans,
+            "page_height": page.rect.height,
+            "page_width": page.rect.width,
+        }
     doc.close()
     return pages
 
@@ -119,7 +147,13 @@ def load_or_extract(pdf_path: str) -> dict:
     cache = cache_path(pdf_path)
     if os.path.exists(cache):
         with open(cache, "r") as f:
-            return json.load(f)
+            data = json.load(f)
+        if "pages_data" not in data:
+            pages = extract_pages_with_coords(pdf_path)
+            data["pages_data"] = pages
+            with open(cache, "w") as f:
+                json.dump(data, f, indent=2)
+        return data
 
     pages = extract_pages(pdf_path)
     if pages is None:
