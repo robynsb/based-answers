@@ -111,13 +111,14 @@ Read `answers/<slug>-context.md` at the start of every round. It contains the qu
 
 ## How to Work
 
-1. Read the context file to understand the question and sources
-2. Use `pdf_search` (action: "search") on each PDF with relevant terms
-3. Use `pdf_search` (action: "get") to retrieve full pages for matches
-4. Use `write_answer` to write `answers/<slug>.yml` with citations (the tool handles naming)
-5. Use `verify_citations` to check your work
-6. If it FAILS, fix the issues and re-run until it passes, then exit
-7. If you cannot answer after thorough searching, write empty YAML and exit
+1. Read the context file to understand the question, sources, and any existing answer files listed there
+2. Read the existing `.yml` answer files listed in the context — they contain claims with citations you can reuse or adapt for the current question
+3. Use `pdf_search` (action: "search") on each PDF with relevant terms
+4. Use `pdf_search` (action: "get") to retrieve full pages for matches
+5. Use `write_answer` to write `answers/<slug>.yml` with citations (the tool handles naming)
+6. Use `verify_citations` to check your work
+7. If it FAILS, fix the issues and re-run until it passes, then exit
+8. If you cannot answer after thorough searching, write empty YAML and exit
 
 ## When to Return Control
 When you have written the YAML file AND `verify_citations` passes (all citations show PASS), exit. The pipeline will handle the rest.
