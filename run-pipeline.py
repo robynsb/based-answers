@@ -356,23 +356,36 @@ def main():
             print(f"Error: PDF not found: {pdf_path}", file=sys.stderr)
             sys.exit(1)
 
-        print(f"Indexing: {pdf_path.name}")
-        cmd = [
-            "nix", "develop", f"path:{SKILL_DIR}", "-c",
-            sys.executable, str(SKILL_DIR / "pdf-search.py"),
-            str(pdf_path), "info",
-        ]
-        r = subprocess.run(cmd, capture_output=True, text=True)
-        info = {"file": pdf_path.name, "abspath": str(pdf_path), "pages": "?", "chunks": "?", "tokens": "?"}
-        for line in (r.stdout or "").split("\n"):
-            if "Pages:" in line:
-                info["pages"] = line.split(":", 1)[1].strip()
-            elif "Chunks:" in line:
-                info["chunks"] = line.split(":", 1)[1].strip()
-            elif "tokens:" in line.lower():
-                info["tokens"] = line.split(":", 1)[1].strip()
+        cache_file = pdf_path.with_name(pdf_path.name + ".json")
+        if cache_file.exists():
+            print(f"  {pdf_path.name} (cached)")
+            with open(cache_file) as f:
+                data = json.load(f)
+            info = {
+                "file": pdf_path.name,
+                "abspath": str(pdf_path),
+                "pages": str(data.get("pages", "?")),
+                "chunks": str(len(data.get("chunks", []))),
+                "tokens": str(data.get("estimated_tokens", len(json.dumps(data)) // 1000)),
+            }
+        else:
+            print(f"Indexing: {pdf_path.name}")
+            cmd = [
+                "nix", "develop", f"path:{SKILL_DIR}", "-c",
+                sys.executable, str(SKILL_DIR / "pdf-search.py"),
+                str(pdf_path), "info",
+            ]
+            r = subprocess.run(cmd, capture_output=True, text=True)
+            info = {"file": pdf_path.name, "abspath": str(pdf_path), "pages": "?", "chunks": "?", "tokens": "?"}
+            for line in (r.stdout or "").split("\n"):
+                if "Pages:" in line:
+                    info["pages"] = line.split(":", 1)[1].strip()
+                elif "Chunks:" in line:
+                    info["chunks"] = line.split(":", 1)[1].strip()
+                elif "tokens:" in line.lower():
+                    info["tokens"] = line.split(":", 1)[1].strip()
         pdf_info.append(info)
-        print(f"  {info['file']}: {info['pages']} pages, {info['chunks']} chunks, ~{info['tokens']} tokens")
+        print(f"  {info['file']}: {info['pages']} pages, {info['chunks']} chunks, ~{info['tokens']}K tokens")
 
     # Determine PDF directory for verify-citations
     pdf_dir = str(pdf_paths[0].parent) if pdf_paths else "."
