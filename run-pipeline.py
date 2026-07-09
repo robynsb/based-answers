@@ -7,8 +7,9 @@ citations deterministically. Handles retry loops and auto-installs the
 citation-searcher agent.
 
 Usage:
-  python3 run-pipeline.py <question> <pdf1> [pdf2 ...]
-
+  python3 run-pipeline.py <question> [pdf1 pdf2 ...]
+  
+If no PDFs are given, all *.pdf in the working directory are used.
 Must be run from the skill directory (nix develop handles dependencies).
 """
 
@@ -113,9 +114,6 @@ def write_context(slug: str, question: str, pdf_info: list[dict], rounds: list[d
         lines.append(f"- {info['file']} (pages: {info['pages']}, chunks: {info['chunks']}, ~{info['tokens']}K tokens)")
         lines.append(f"  Full path: {info['abspath']}")
 
-    # Collect PDF dirs for verify-citations --pdf-dir hint
-    pdf_dirs = sorted(set(Path(info['abspath']).parent for info in pdf_info))
-
     lines += [
         "",
         "## Instructions",
@@ -126,9 +124,8 @@ def write_context(slug: str, question: str, pdf_info: list[dict], rounds: list[d
         "- Every claim needs a verbatim citation with page number",
         "- No world knowledge",
         "- Write to `answers/<slug>.yml` (slug from this file's name)",
-        "- Always run verify-citations.py with --pdf-dir to check before exiting:",
-        f"  `nix develop \"path:{SKILL_DIR}\" -c python3 {SKILL_DIR / 'verify-citations.py'} --pdf-dir <PDF_DIR> answers/<slug>.yml`",
-        f"  (PDF_DIR should be the directory containing the PDF file, e.g. {pdf_dirs.pop() if pdf_dirs else '.'})",
+        "- Always run verify-citations.py to check before exiting:",
+        f"  `nix develop \"path:{SKILL_DIR}\" -c python3 {SKILL_DIR / 'verify-citations.py'} answers/<slug>.yml`",
         "- If you cannot find evidence, write empty YAML",
         "",
         f"Search command: `nix develop \"path:{SKILL_DIR}\" -c python3 {SKILL_DIR / 'pdf-search.py'} <pdf_path> search \"<query>\"`",
@@ -192,7 +189,7 @@ def install_banner(label: str):
 def main():
     parser = argparse.ArgumentParser(description="Citation-grounded QA pipeline orchestrator")
     parser.add_argument("question", help="Question to answer")
-    parser.add_argument("pdfs", nargs="+", help="PDF source file(s)")
+    parser.add_argument("pdfs", nargs="*", help="PDF source file(s) — defaults to all *.pdf in working directory")
     args = parser.parse_args()
 
     question = args.question.strip()
@@ -211,9 +208,15 @@ def main():
     else:
         print(f"Agent already installed: {AGENT_DST}")
 
+    # Collect PDFs from args or scan working directory
+    pdf_paths = args.pdfs if args.pdfs else sorted(Path(".").glob("*.pdf"))
+    if not pdf_paths:
+        print("Error: no PDF files found (provide as args or put them in working directory)", file=sys.stderr)
+        sys.exit(1)
+
     # Index PDFs
     pdf_info = []
-    for pdf in args.pdfs:
+    for pdf in pdf_paths:
         pdf_path = Path(pdf).resolve()
         if not pdf_path.exists():
             print(f"Error: PDF not found: {pdf_path}", file=sys.stderr)
@@ -238,7 +241,7 @@ def main():
         print(f"  {info['file']}: {info['pages']} pages, {info['chunks']} chunks, ~{info['tokens']} tokens")
 
     # Determine PDF directory for verify-citations
-    pdf_dir = str(Path(args.pdfs[0]).resolve().parent)
+    pdf_dir = str(pdf_paths[0].parent) if pdf_paths else "."
 
     # Main search loop
     rounds = []
