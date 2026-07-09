@@ -28,6 +28,9 @@ SKILL_DIR = Path(__file__).parent.resolve()
 AGENT_NAME = "citation-searcher"
 AGENT_SRC = SKILL_DIR / f"{AGENT_NAME}.md"
 AGENT_DST = Path.home() / ".config/opencode/agents" / f"{AGENT_NAME}.md"
+CHECKER_NAME = "coherence-checker"
+CHECKER_SRC = SKILL_DIR / f"{CHECKER_NAME}.md"
+CHECKER_DST = Path.home() / ".config/opencode/agents" / f"{CHECKER_NAME}.md"
 TOOLS_DIR = Path.home() / ".config/opencode/tools"
 MAX_ROUNDS = 3
 
@@ -101,7 +104,7 @@ def run_checker(prompt_text: str, timeout: int = 120) -> str:
         f.write(prompt_text)
         tmp_path = f.name
 
-    cmd = ["opencode", "run", "Evaluate the following.", "-f", tmp_path]
+    cmd = ["opencode", "run", "--agent", CHECKER_NAME, "Evaluate the following.", "-f", tmp_path]
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
     lines = []
     for line in iter(proc.stdout.readline, ""):
@@ -331,13 +334,19 @@ def main():
     slug = derive_slug(question)
     os.makedirs("answers", exist_ok=True)
 
-    # Install agent
+    # Install agents
     AGENT_DST.parent.mkdir(parents=True, exist_ok=True)
     if not AGENT_DST.exists():
         shutil.copy2(AGENT_SRC, AGENT_DST)
         print(f"Installed agent: {AGENT_DST}")
     else:
         print(f"Agent already installed: {AGENT_DST}")
+
+    if not CHECKER_DST.exists():
+        shutil.copy2(CHECKER_SRC, CHECKER_DST)
+        print(f"Installed agent: {CHECKER_DST}")
+    else:
+        print(f"Checker already installed: {CHECKER_DST}")
 
     # Install custom tools
     install_tools()
