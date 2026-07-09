@@ -30,7 +30,7 @@ def _source_candidates(source_name: str, yaml_dir: Path) -> list[Path]:
 def load_cache(source_name: str, yaml_dir: Path) -> dict | None:
     for p in _source_candidates(source_name, yaml_dir):
         resolved = p.resolve()
-        cache = resolved.parent / (resolved.name + ".json")
+        cache = Path.cwd() / "indexed-pdfs" / (resolved.name + ".json")
         if cache.exists():
             with open(cache) as f:
                 return json.load(f)
@@ -48,7 +48,7 @@ def ensure_cache_has_pages_data(pdf_path: str, source_name: str, yaml_dir: Path,
     cache_file = None
     for p in _source_candidates(source_name, yaml_dir):
         resolved = p.resolve()
-        cf = resolved.parent / (resolved.name + ".json")
+        cf = Path.cwd() / "indexed-pdfs" / (resolved.name + ".json")
         if cf.exists():
             cache_file = cf
             break

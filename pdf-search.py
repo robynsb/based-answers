@@ -7,7 +7,7 @@ Usage (substitute actual path for SKILL_DIR):
   nix develop "path:SKILL_DIR" -c python3 SKILL_DIR/pdf-search.py <file.pdf> search <query>
   nix develop "path:SKILL_DIR" -c python3 SKILL_DIR/pdf-search.py <file.pdf> get <page-num>
 
-Caches extracted text as <file.pdf>.json sidecar for fast re-use.
+  Caches extracted text in indexed-pdfs/ for fast re-use.
 Depends on PyMuPDF (provided by the skill's flake.nix).
 
 # Public API for import:
@@ -140,7 +140,9 @@ def estimate_tokens(text: str) -> int:
 # ── Cache ───────────────────────────────────────────────────────────────
 
 def cache_path(pdf_path: str) -> str:
-    return pdf_path + ".json"
+    cache_dir = os.path.join(os.getcwd(), "indexed-pdfs")
+    os.makedirs(cache_dir, exist_ok=True)
+    return os.path.join(cache_dir, os.path.basename(pdf_path) + ".json")
 
 
 def load_or_extract(pdf_path: str) -> dict:

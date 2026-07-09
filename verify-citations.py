@@ -80,8 +80,8 @@ def _parse_yaml_simple(path: str) -> dict:
     return result
 
 
-def load_pdf_cache(pdf_path: str) -> dict:
-    cache = pdf_path + ".json"
+def load_pdf_cache(source_name: str) -> dict:
+    cache = os.path.join(os.getcwd(), "indexed-pdfs", source_name + ".json")
     if not os.path.exists(cache):
         return None
     with open(cache) as f:
@@ -286,8 +286,7 @@ def main():
             page = cit.get("page", 0)
             source = cit.get("source", "")
 
-            cache_path = os.path.join(args.pdf_dir, source)
-            cache = load_pdf_cache(cache_path)
+            cache = load_pdf_cache(source)
 
             result = None
             if cache is None:

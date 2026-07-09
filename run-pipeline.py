@@ -356,7 +356,7 @@ def main():
             print(f"Error: PDF not found: {pdf_path}", file=sys.stderr)
             sys.exit(1)
 
-        cache_file = pdf_path.with_name(pdf_path.name + ".json")
+        cache_file = Path("indexed-pdfs") / f"{pdf_path.name}.json"
         if cache_file.exists():
             print(f"  {pdf_path.name} (cached)")
             with open(cache_file) as f:
