@@ -127,6 +127,8 @@ def main():
 
     yaml_path = Path(args.yaml)
     yaml_dir = yaml_path.parent
+    html_dir = Path("answer-pages")
+    html_dir.mkdir(parents=True, exist_ok=True)
     if not yaml_path.exists():
         print(f"Error: YAML file not found: {yaml_path}", file=sys.stderr)
         sys.exit(1)
@@ -234,7 +236,7 @@ def main():
         print(f"Error rendering template: {e}", file=sys.stderr)
         sys.exit(1)
 
-    out_path = yaml_dir / (yaml_path.stem + ".html")
+    out_path = html_dir / (yaml_path.stem + ".html")
     out_path.write_text(html, encoding="utf-8")
 
     print(out_path.resolve())
