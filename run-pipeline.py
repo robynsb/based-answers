@@ -114,6 +114,12 @@ def run_checker(prompt_text: str, timeout: int = 120) -> str:
     return "".join(lines)
 
 
+def _agent_instructions() -> str:
+    text = AGENT_SRC.read_text()
+    parts = text.split("---", 2)
+    return parts[2].strip() if len(parts) > 2 else text
+
+
 def write_context(slug: str, question: str, pdf_info: list[dict], rounds: list[dict]) -> Path:
     path = Path("answers") / f"{slug}-context.md"
     lines = [
@@ -132,15 +138,7 @@ def write_context(slug: str, question: str, pdf_info: list[dict], rounds: list[d
         "",
         "## Instructions",
         "",
-        f"You are a citation-grounded QA agent. Full instructions: {AGENT_SRC}",
-        "",
-        "Key rules:",
-        "- Every claim needs a verbatim citation with page number",
-        "- No world knowledge",
-        "- Use `pdf_search` tool (action: search/get/info) to explore PDFs",
-        "- Write answer to `answers/<slug>.yml`",
-        "- Use `verify_citations` tool to check your work before exiting",
-        "- If you cannot find evidence, write empty YAML",
+        _agent_instructions(),
         "",
         "## Prior Attempts & Feedback",
     ]
