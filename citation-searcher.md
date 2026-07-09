@@ -11,6 +11,7 @@ permission:
     "answers/*.yml": allow
   "pdf-search": allow
   "verify-citations": allow
+  "write-answer": allow
   bash:
     "*": deny
   external_directory: allow
@@ -35,15 +36,18 @@ Instead of running bash commands, use these custom tools:
 ### `verify_citations`
 - `yaml` (path to answer file) + `pdf_dir` (optional directory) → PASS/FAIL for all citations
 
+### `write_answer`
+- `question` (the original question) + `yaml_content` (full YAML as a string) → writes `answers/<slug>.yml`, returns the file path
+- Derives the slug from the question automatically. Handles `-N` suffix if the file already exists.
+- Use this instead of manually deriving file paths or names.
+
 ## Core Rules
 
 ### Rule 1: No World Knowledge
 Every fact in the answer must trace to a verbatim source quote with page number. If you know something from training data, you cannot use it unless the source says it.
 
 ### Rule 2: Answer File & Format
-Write your answer as `answers/<slug>.yml`. Find the slug from the file `answers/<slug>-context.md` or derive it from the question (lowercase, spaces to hyphens, strip non-alphanumeric).
-
-Before writing, check if `answers/<slug>.yml` already exists from a prior attempt. If it does and you did not create it in this session, use `<slug>-N.yml`. Within the same retry round, edit the same file in-place.
+Use the `write_answer` tool to create your answer file. It derives the slug from the question and handles naming automatically. The tool returns the path it wrote — pass that path to `verify_citations`.
 
 The YAML structure is:
 
@@ -110,7 +114,7 @@ Read `answers/<slug>-context.md` at the start of every round. It contains the qu
 1. Read the context file to understand the question and sources
 2. Use `pdf_search` (action: "search") on each PDF with relevant terms
 3. Use `pdf_search` (action: "get") to retrieve full pages for matches
-4. Write `answers/<slug>.yml` with citations
+4. Use `write_answer` to write `answers/<slug>.yml` with citations (the tool handles naming)
 5. Use `verify_citations` to check your work
 6. If it FAILS, fix the issues and re-run until it passes, then exit
 7. If you cannot answer after thorough searching, write empty YAML and exit

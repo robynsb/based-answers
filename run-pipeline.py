@@ -161,11 +161,14 @@ def write_context(slug: str, question: str, pdf_info: list[dict], rounds: list[d
 
 
 def find_yaml(slug: str) -> Path | None:
-    for p in sorted(Path("answers").glob(f"{slug}*.yml")):
+    candidates = []
+    for p in Path("answers").glob(f"{slug}*.yml"):
         stem = p.stem
         if stem == slug or re.match(rf"^{re.escape(slug)}-\d+$", stem):
-            return p
-    return None
+            candidates.append(p)
+    if not candidates:
+        return None
+    return max(candidates, key=lambda p: p.stat().st_mtime)
 
 
 def search_loop(slug: str, question: str, pdf_info: list[dict], rounds: list[dict], pdf_dir: str) -> Path | None:
@@ -276,7 +279,42 @@ export default tool({{
 }})
 """)
 
-    print(f"Installed tools: pdf-search, verify-citations")
+    write_answer_ts = TOOLS_DIR / "write-answer.ts"
+    write_answer_ts.write_text(f"""import {{ tool }} from "@opencode-ai/plugin"
+import * as fs from "fs"
+
+export default tool({{
+  description: "Write a citation-grounded answer YAML file. Derives the slug from the question and handles -N suffix for retries.",
+  args: {{
+    question: tool.schema.string().describe("The original question (used to derive the filename slug)"),
+    yaml_content: tool.schema.string().describe("Full YAML content to write"),
+  }},
+  async execute(args) {{
+    fs.mkdirSync("answers", {{ recursive: true }})
+
+    let slug = args.question.toLowerCase()
+      .replace(/[^a-z0-9\\s-]/g, "")
+      .replace(/\\s+/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^-|-$/g, "")
+      .slice(0, 80)
+
+    let filename = `answers/${{slug}}.yml`
+    if (fs.existsSync(filename)) {{
+      let n = 2
+      while (fs.existsSync(`answers/${{slug}}-${{n}}.yml`)) {{
+        n++
+      }}
+      filename = `answers/${{slug}}-${{n}}.yml`
+    }}
+
+    fs.writeFileSync(filename, args.yaml_content, "utf-8")
+    return `${{filename}}`
+  }},
+}})
+""")
+
+    print(f"Installed tools: pdf-search, verify-citations, write-answer")
 
 
 def main():
