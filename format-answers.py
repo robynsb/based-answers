@@ -137,12 +137,12 @@ def main():
         sys.exit(1)
 
     question = data.get("question", "").strip()
+    concatenation = data.get("concatenation", "").strip()
     answers = data["answers"]
     unable = not answers
 
     all_refs = []
     ref_counter = 0
-    rendered_answers = []
     errors = []
 
     skill_dir = Path(__file__).parent.resolve()
@@ -153,7 +153,6 @@ def main():
             continue
         citations = answer.get("citations", [])
 
-        rendered_citations = []
         for cit in citations:
             ref_counter += 1
             text = cit.get("text", "").strip()
@@ -199,24 +198,31 @@ def main():
                 "page_height": page_h,
             })
 
-            rendered_citations.append({
-                "num": ref_counter,
-                "source_path": source_path,
-                "page": page,
-            })
+    # Build concatenation HTML: insert clickable citation superscripts after each claim
+    concat_parts = []
+    ref_index = 0
+    for answer in answers:
+        claim = answer.get("claim", "").strip()
+        if not claim:
+            continue
+        cits = answer.get("citations", [])
+        links = []
+        for i in range(len(cits)):
+            n = ref_index + i + 1
+            ref = all_refs[n - 1]
+            links.append(f'<a href="file://{ref["source_path"]}#page={ref["page"]}">{n}</a>')
+        ref_index += len(cits)
+        sup = f"<sup>{','.join(links)}</sup>" if links else ""
+        concat_parts.append(f"{claim}{sup}")
 
-        rendered_answers.append({
-            "number": a_idx + 1,
-            "claim": claim,
-            "citations": rendered_citations,
-        })
+    cat_html = ". ".join(concat_parts)
 
     try:
         env = Environment(loader=FileSystemLoader(str(skill_dir)))
         template = env.get_template("answer-template.html")
         html = template.render(
             question=question,
-            answers=rendered_answers,
+            concatenation=cat_html,
             all_references=all_refs,
             unable=unable,
             errors=errors if errors else None,

@@ -39,11 +39,10 @@
     margin: 0 auto;
   }
   h1 { font-size: 1.5rem; margin-bottom: 1.5rem; border-bottom: 2px solid var(--accent); padding-bottom: 0.5rem; }
-  .claim { margin-bottom: 0.75rem; padding-left: 2rem; text-indent: -2rem; }
-  .claim .num { font-weight: 700; color: var(--accent); margin-right: 0.5rem; }
-  .claim sup { font-size: 0.75rem; }
-  .claim sup a { color: var(--accent); text-decoration: none; font-weight: 600; }
-  .claim sup a:hover { text-decoration: underline; }
+  .concatenation { font-size: 1.1rem; line-height: 1.8; }
+  .concatenation sup { font-size: 0.75rem; }
+  .concatenation sup a { color: var(--accent); text-decoration: none; font-weight: 600; }
+  .concatenation sup a:hover { text-decoration: underline; }
 
   .references { margin-top: 2.5rem; }
   .references h2 { font-size: 1.1rem; margin-bottom: 1rem; border-bottom: 1px solid var(--border); padding-bottom: 0.3rem; }
@@ -110,17 +109,7 @@
 {% if unable %}
 <p class="unable">Unable to answer this question given the sources.</p>
 {% else %}
-  {% for answer in answers %}
-    <p class="claim">
-      <span class="num">{{ answer.number }}.</span>
-      {{ answer.claim }}
-      <sup>
-        {% for cit in answer.citations %}
-        <a href="file://{{ cit.source_path }}#page={{ cit.page }}">{{ cit.num }}</a>{% if not loop.last %},{% endif %}
-        {% endfor %}
-      </sup>
-    </p>
-  {% endfor %}
+  <p class="concatenation">{{ concatenation | safe }}</p>
 
   <section class="references">
     <h2>References</h2>
