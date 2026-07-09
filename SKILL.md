@@ -386,7 +386,7 @@ The HTML page features:
 
 ### Environment
 
-This skill ships with its own `flake.nix` (same directory as this file). All dependencies (PyMuPDF for extraction, PyYAML for verification) are provided by the flake. No pip or system packages needed.
+This skill ships with its own `flake.nix` (same directory as this file). All dependencies (PyMuPDF for extraction, PyYAML for verification, Jinja2 for HTML templating) are provided by the flake. No pip or system packages needed.
 
 Do not reference `nixpkgs#` derivations directly. Always use `nix develop "path:SKILL_DIR"` (with the real directory substituted) to load the skill's own flake.
 
