@@ -74,6 +74,8 @@ nix develop "path:.opencode/skills/citation-grounded-qa" -c python3 .opencode/sk
 
 ### 8. Output
 - Final answer as `answers/<slug>.yml` (verified)
+- Run `nix develop "path:SKILL_DIR" -c python3 SKILL_DIR/format-answers.py answers/<slug>.yml` to generate an HTML answer page with styled citations and PDF page previews
+- CMD+CLICK the printed path to open the HTML in your browser
 - Or: "Unable to answer after 3 rounds."
 
 ## Core Rules
@@ -287,9 +289,9 @@ If Stage 3 returns FAIL, return to step 2 (Search) with feedback from the sub-ag
 
 | Round | Action |
 |-------|--------|
-| 1 | Search → Answer (YAML) → Deterministic verify → Semantic verify → Coherence & completeness verify |
-| 2 | Re-search with broader/narrower terms → Revise YAML → Verify → Coherence & completeness verify |
-| 3 | Final attempt with different search strategy → Revise → Verify → Coherence & completeness verify |
+| 1 | Search → Answer (YAML) → Deterministic verify → Semantic verify → Coherence & completeness verify → Format HTML |
+| 2 | Re-search with broader/narrower terms → Revise YAML → Verify → Coherence & completeness verify → Format HTML |
+| 3 | Final attempt with different search strategy → Revise → Verify → Coherence & completeness verify → Format HTML |
 | After 3 | Output `answers: []` |
 
 ## Rationalization Table
@@ -319,6 +321,7 @@ If Stage 3 returns FAIL, return to step 2 (Search) with feedback from the sub-ag
 - You're considering reading the entire PDF rather than searching
 - You're printing what the checker "would say" instead of dispatching it
 - You haven't run verify-citations.py yet
+- You haven't run format-answers.py yet
 - You forgot to add the `concatenation` field to the answer YAML
 - The concatenation won't read as a coherent paragraph when claims are joined
 
@@ -407,3 +410,4 @@ Do not reference `nixpkgs#` derivations directly. Always use `nix develop "path:
 13. **Not creating answers/ directory** — Run `mkdir -p answers` at the start. Writing to a non-existent directory will fail.
 14. **Overwriting a prior-session answer file** — Check if `answers/<slug>.yml` exists before writing. If it does and you didn't create it this session, use `<slug>-N.yml`.
 15. **Not reusing prior claims** — Check existing `answers/*.yml` files during search. If a prior answer has relevant, well-supported claims, reuse them instead of starting from scratch.
+16. **Forgetting to generate the HTML output** — After the YAML is verified, run `format-answers.py` to produce the final HTML answer page. The path printed to stdout is CMD+CLICKable.
