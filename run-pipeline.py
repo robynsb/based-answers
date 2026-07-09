@@ -42,12 +42,9 @@ def print_banner(label: str):
     print(f"\n{'#' * 60}\n#  {label}\n{'#' * 60}\n", flush=True)
 
 
-def run_opencode(session: str, prompt_path: Path, is_retry: bool = False, timeout: int = 600) -> int:
-    cmd = ["opencode", "run", "--session", session, "--agent", AGENT_NAME, "-f", str(prompt_path)]
-    if is_retry:
-        cmd.append("--continue")
-
-    print(f"  Session: {session}  |  Agent: {AGENT_NAME}  |  {'retry' if is_retry else 'initial'}", flush=True)
+def run_search_agent(prompt_path: Path, question: str, timeout: int = 600) -> int:
+    cmd = ["opencode", "run", "--agent", AGENT_NAME, question, "-f", str(prompt_path)]
+    print(f"  Agent: {AGENT_NAME}", flush=True)
     print(f"{'-' * 50}", flush=True)
 
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
@@ -72,10 +69,11 @@ def run_opencode(session: str, prompt_path: Path, is_retry: bool = False, timeou
     return proc.returncode
 
 
-def run_deterministic(yaml_path: Path) -> dict:
+def run_deterministic(yaml_path: Path, pdf_dir: str = ".") -> dict:
     cmd = [
         "nix", "develop", f"path:{SKILL_DIR}", "-c",
         sys.executable, str(SKILL_DIR / "verify-citations.py"),
+        "--pdf-dir", pdf_dir,
         "-v", str(yaml_path),
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
@@ -83,12 +81,12 @@ def run_deterministic(yaml_path: Path) -> dict:
     return {"passed": result.returncode == 0, "output": output}
 
 
-def run_checker(session: str, prompt_text: str, timeout: int = 120) -> str:
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False, prefix=f"{session}-") as f:
+def run_checker(prompt_text: str, timeout: int = 120) -> str:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as f:
         f.write(prompt_text)
         tmp_path = f.name
 
-    cmd = ["opencode", "run", "--session", session, "-f", tmp_path]
+    cmd = ["opencode", "run", "Evaluate the following.", "-f", tmp_path]
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
     lines = []
     for line in iter(proc.stdout.readline, ""):
@@ -113,6 +111,10 @@ def write_context(slug: str, question: str, pdf_info: list[dict], rounds: list[d
     ]
     for info in pdf_info:
         lines.append(f"- {info['file']} (pages: {info['pages']}, chunks: {info['chunks']}, ~{info['tokens']}K tokens)")
+        lines.append(f"  Full path: {info['abspath']}")
+
+    # Collect PDF dirs for verify-citations --pdf-dir hint
+    pdf_dirs = sorted(set(Path(info['abspath']).parent for info in pdf_info))
 
     lines += [
         "",
@@ -124,13 +126,16 @@ def write_context(slug: str, question: str, pdf_info: list[dict], rounds: list[d
         "- Every claim needs a verbatim citation with page number",
         "- No world knowledge",
         "- Write to `answers/<slug>.yml` (slug from this file's name)",
-        "- Run `nix develop \"path:SKILL_DIR\" -c python3 SKILL_DIR/verify-citations.py answers/<slug>.yml`",
-        "  to check your work before exiting",
+        "- Always run verify-citations.py with --pdf-dir to check before exiting:",
+        f"  `nix develop \"path:{SKILL_DIR}\" -c python3 {SKILL_DIR / 'verify-citations.py'} --pdf-dir <PDF_DIR> answers/<slug>.yml`",
+        f"  (PDF_DIR should be the directory containing the PDF file, e.g. {pdf_dirs.pop() if pdf_dirs else '.'})",
         "- If you cannot find evidence, write empty YAML",
         "",
-        f"SKILL_DIR (for nix develop commands): {SKILL_DIR}",
-        "",
-        "## Prior Attempts & Feedback",
+        f"Search command: `nix develop \"path:{SKILL_DIR}\" -c python3 {SKILL_DIR / 'pdf-search.py'} <pdf_path> search \"<query>\"`",
+        f"Get page command: `nix develop \"path:{SKILL_DIR}\" -c python3 {SKILL_DIR / 'pdf-search.py'} <pdf_path> get <page_num>`",
+        f"Info command: `nix develop \"path:{SKILL_DIR}\" -c python3 {SKILL_DIR / 'pdf-search.py'} <pdf_path> info`",
+        f"",
+        f"## Prior Attempts & Feedback",
     ]
 
     if not rounds:
@@ -151,7 +156,7 @@ def find_yaml(slug: str) -> Path | None:
     return None
 
 
-def search_loop(slug: str, question: str, pdf_info: list[dict], rounds: list[dict]) -> Path | None:
+def search_loop(slug: str, question: str, pdf_info: list[dict], rounds: list[dict], pdf_dir: str) -> Path | None:
     for round_num in range(1, MAX_ROUNDS + 1):
         label = f"SEARCH ROUND {round_num}/{MAX_ROUNDS}"
         if rounds:
@@ -159,7 +164,7 @@ def search_loop(slug: str, question: str, pdf_info: list[dict], rounds: list[dic
         install_banner(label)
 
         ctx = write_context(slug, question, pdf_info, rounds)
-        run_opencode(slug, ctx, is_retry=bool(rounds))
+        run_search_agent(ctx, question)
 
         yaml_path = find_yaml(slug)
         if not yaml_path:
@@ -167,7 +172,7 @@ def search_loop(slug: str, question: str, pdf_info: list[dict], rounds: list[dic
             print("  [FAIL] No YAML file found\n")
             continue
 
-        v = run_deterministic(yaml_path)
+        v = run_deterministic(yaml_path, pdf_dir)
         if v["passed"]:
             print(f"  [PASS] {yaml_path.name} — all citations verified\n")
             return yaml_path
@@ -209,7 +214,7 @@ def main():
     # Index PDFs
     pdf_info = []
     for pdf in args.pdfs:
-        pdf_path = Path(pdf)
+        pdf_path = Path(pdf).resolve()
         if not pdf_path.exists():
             print(f"Error: PDF not found: {pdf_path}", file=sys.stderr)
             sys.exit(1)
@@ -221,7 +226,7 @@ def main():
             str(pdf_path), "info",
         ]
         r = subprocess.run(cmd, capture_output=True, text=True)
-        info = {"file": pdf_path.name, "pages": "?", "chunks": "?", "tokens": "?"}
+        info = {"file": pdf_path.name, "abspath": str(pdf_path), "pages": "?", "chunks": "?", "tokens": "?"}
         for line in (r.stdout or "").split("\n"):
             if "Pages:" in line:
                 info["pages"] = line.split(":", 1)[1].strip()
@@ -232,9 +237,12 @@ def main():
         pdf_info.append(info)
         print(f"  {info['file']}: {info['pages']} pages, {info['chunks']} chunks, ~{info['tokens']} tokens")
 
+    # Determine PDF directory for verify-citations
+    pdf_dir = str(Path(args.pdfs[0]).resolve().parent)
+
     # Main search loop
     rounds = []
-    yaml_path = search_loop(slug, question, pdf_info, rounds)
+    yaml_path = search_loop(slug, question, pdf_info, rounds, pdf_dir)
 
     if yaml_path is None:
         print(f"\n[EXHAUSTED] All {MAX_ROUNDS} rounds failed.")
@@ -280,7 +288,7 @@ Does the SYNTHESIS of all SOURCE_TEXTS strictly imply CLAIM?
 
 Rules: direct logical inference OK. Cross-source inference OK. External domain knowledge = FAIL. Never use your own knowledge.
 """
-            result = run_checker(f"{slug}-sem-{i}", rubric)
+            result = run_checker(rubric)
             passed = "PASS" in result.upper() and "FAIL" not in result.upper()
             print(f"  {'[PASS]' if passed else '[FAIL]'} Claim {i+1}: {claim[:80]}")
             if not passed:
@@ -290,7 +298,7 @@ Rules: direct logical inference OK. Cross-source inference OK. External domain k
         for sf in semantic_failures:
             rounds.append({"feedback": f"Semantic checker FAILED for claim: {sf['claim']}\nChecker output:\n{sf['output']}"})
         print(f"\n  Restarting search with {len(semantic_failures)} semantic failure(s)...")
-        yaml_path = search_loop(slug, question, pdf_info, rounds)
+        yaml_path = search_loop(slug, question, pdf_info, rounds, pdf_dir)
 
         if yaml_path is None:
             print(f"\n[EXHAUSTED] After semantic failures.")
@@ -325,13 +333,13 @@ Respond with:
 - PASS
 - FAIL: <what is missing, unclear, or doesn't make sense>
 """
-        result = run_checker(f"{slug}-coh", rubric)
+        result = run_checker(rubric)
         passed = "PASS" in result.upper() and "FAIL" not in result.upper()
         print(f"  {'[PASS]' if passed else '[FAIL]'} Coherence check")
         if not passed:
             rounds.append({"feedback": f"Coherence checker FAILED:\n{result[:2000]}"})
             print(f"\n  Restarting search with coherence failure...")
-            yaml_path = search_loop(slug, question, pdf_info, rounds)
+            yaml_path = search_loop(slug, question, pdf_info, rounds, pdf_dir)
             if yaml_path is None:
                 print(f"\n[EXHAUSTED] After coherence search.")
                 yaml_path = Path("answers") / f"{slug}.yml"

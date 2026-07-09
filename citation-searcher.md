@@ -10,9 +10,11 @@ permission:
   write:
     "answers/*.yml": allow
   bash:
-    "nix develop * -c python3 *pdf-search.py*": allow
-    "nix develop * -c python3 *verify-citations.py*": allow
     "*": ask
+    "nix develop * -c python3 *": allow
+    "nix develop * --command python3 *": allow
+    "ls *": allow
+  external_directory: allow
   task: deny
   todowrite: deny
   webfetch: deny
