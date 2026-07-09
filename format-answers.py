@@ -13,19 +13,22 @@ import json
 import sys
 from pathlib import Path
 
+import yaml as _yaml
+from jinja2 import Environment, FileSystemLoader
+from jinja2.exceptions import TemplateNotFound
+
 
 def load_yaml(path: str) -> dict:
-    import yaml as _yaml
     with open(path) as f:
         return _yaml.safe_load(f)
 
 
+def _source_candidates(source_name: str, yaml_dir: Path) -> list[Path]:
+    return [yaml_dir / source_name, Path(source_name)]
+
+
 def load_cache(source_name: str, yaml_dir: Path) -> dict | None:
-    candidates = [
-        yaml_dir / source_name,
-        Path(source_name),
-    ]
-    for p in candidates:
+    for p in _source_candidates(source_name, yaml_dir):
         resolved = p.resolve()
         cache = resolved.parent / (resolved.name + ".json")
         if cache.exists():
@@ -35,65 +38,84 @@ def load_cache(source_name: str, yaml_dir: Path) -> dict | None:
 
 
 def get_source_abs_path(source_name: str, yaml_dir: Path) -> str | None:
-    candidates = [
-        yaml_dir / source_name,
-        Path(source_name),
-    ]
-    for p in candidates:
+    for p in _source_candidates(source_name, yaml_dir):
         if p.exists():
             return str(p.resolve())
     return None
 
 
-def ensure_cache_has_pages_data(pdf_path: str, source_name: str, yaml_dir: Path):
-    cache_path = (yaml_dir / source_name).resolve()
-    cache_file = cache_path.parent / (cache_path.name + ".json")
-    if not cache_file.exists():
+def ensure_cache_has_pages_data(pdf_path: str, source_name: str, yaml_dir: Path, skill_dir: Path):
+    cache_file = None
+    for p in _source_candidates(source_name, yaml_dir):
+        resolved = p.resolve()
+        cf = resolved.parent / (resolved.name + ".json")
+        if cf.exists():
+            cache_file = cf
+            break
+    if cache_file is None:
         return
     try:
         with open(cache_file) as f:
             data = json.load(f)
-    except (json.JSONDecodeError, OSError):
+    except (json.JSONDecodeError, OSError) as e:
+        print(f"Warning: corrupt or unreadable cache {cache_file}: {e}", file=sys.stderr)
         return
     if "pages_data" in data:
         return
-    skill_dir = str(Path(__file__).parent.resolve())
-    if skill_dir not in sys.path:
-        sys.path.insert(0, skill_dir)
-    try:
-        from pdf_search import extract_pages_with_coords
-    except ImportError:
+    import importlib.util
+    pdf_search_path = str(skill_dir / "pdf_search.py")
+    if not Path(pdf_search_path).exists():
+        print(f"Warning: pdf_search.py not found at {pdf_search_path}", file=sys.stderr)
+        return
+    spec = importlib.util.spec_from_file_location("pdf_search", pdf_search_path)
+    if spec is None or spec.loader is None:
+        return
+    pdf_mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(pdf_mod)
+    extract_pages_with_coords = getattr(pdf_mod, "extract_pages_with_coords", None)
+    if extract_pages_with_coords is None:
+        print("Warning: pdf_search.py has no extract_pages_with_coords function", file=sys.stderr)
         return
     try:
         pages = extract_pages_with_coords(str(pdf_path))
         data["pages_data"] = pages
         with open(cache_file, "w") as f:
             json.dump(data, f, indent=2)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Warning: failed to extract pages data from {pdf_path}: {e}", file=sys.stderr)
 
 
-def get_highlights_for_text(pages_data: dict, page: int, text: str) -> tuple[list[dict], float, float]:
+def get_highlights_for_text(pages_data: dict, page: int, text: str, max_results: int = 5) -> tuple[list[dict], float, float]:
     page_key = str(page)
     page_info = pages_data.get(page_key, {})
     spans = page_info.get("spans", [])
     page_w = page_info.get("page_width", 1)
     page_h = page_info.get("page_height", 1)
+    seen_bboxes = set()
     matching = []
     for s in spans:
         if text in s["text"]:
-            matching.append({"bbox": s["bbox"]})
+            key = tuple(s["bbox"])
+            if key not in seen_bboxes:
+                seen_bboxes.add(key)
+                matching.append({"bbox": s["bbox"]})
     if not matching:
         norm = text.replace("\n", " ").strip()
         for s in spans:
             if norm in s["text"].replace("\n", " ").strip():
-                matching.append({"bbox": s["bbox"]})
+                key = tuple(s["bbox"])
+                if key not in seen_bboxes:
+                    seen_bboxes.add(key)
+                    matching.append({"bbox": s["bbox"]})
     if not matching:
         norm = text.replace("\n", " ").strip().lower()
         for s in spans:
             if norm in s["text"].replace("\n", " ").strip().lower():
-                matching.append({"bbox": s["bbox"]})
-    return matching, page_w, page_h
+                key = tuple(s["bbox"])
+                if key not in seen_bboxes:
+                    seen_bboxes.add(key)
+                    matching.append({"bbox": s["bbox"]})
+    return matching[:max_results], page_w, page_h
 
 
 def main():
@@ -103,9 +125,6 @@ def main():
     parser.add_argument("yaml", help="YAML file with claims and citations")
     args = parser.parse_args()
 
-    from jinja2 import Environment, FileSystemLoader
-    from jinja2.exceptions import TemplateNotFound
-
     yaml_path = Path(args.yaml)
     yaml_dir = yaml_path.parent
     if not yaml_path.exists():
@@ -113,8 +132,12 @@ def main():
         sys.exit(1)
     data = load_yaml(str(yaml_path))
 
+    if not isinstance(data.get("answers"), list):
+        print("Error: YAML 'answers' field must be a list", file=sys.stderr)
+        sys.exit(1)
+
     question = data.get("question", "").strip()
-    answers = data.get("answers", [])
+    answers = data["answers"]
     unable = not answers
 
     all_refs = []
@@ -153,7 +176,7 @@ def main():
             if cache:
                 pages_data = cache.get("pages_data")
                 if not pages_data:
-                    ensure_cache_has_pages_data(source_path, source_name, yaml_dir)
+                    ensure_cache_has_pages_data(source_path, source_name, yaml_dir, skill_dir)
                     cache = load_cache(source_name, yaml_dir)
                     if cache:
                         pages_data = cache.get("pages_data", {})
@@ -201,7 +224,7 @@ def main():
     except TemplateNotFound:
         print("Error: Template 'answer-template.html' not found in skill directory", file=sys.stderr)
         sys.exit(1)
-    except Exception as e:
+    except (RuntimeError, TypeError, ValueError) as e:
         print(f"Error rendering template: {e}", file=sys.stderr)
         sys.exit(1)
 
