@@ -46,6 +46,12 @@ def print_banner(label: str):
 
 
 def run_search_agent(prompt_path: Path, question: str, timeout: int = 600) -> int:
+    print(f"\n{'─' * 60}", flush=True)
+    print(f"CONTEXT GIVEN TO {AGENT_NAME}:", flush=True)
+    print(f"{'─' * 60}", flush=True)
+    print(prompt_path.read_text(), flush=True)
+    print(f"{'─' * 60}\n", flush=True)
+
     cmd = ["opencode", "run", "--agent", AGENT_NAME, question, "-f", str(prompt_path)]
     print(f"  Agent: {AGENT_NAME}", flush=True)
     print(f"{'-' * 50}", flush=True)
@@ -85,6 +91,12 @@ def run_deterministic(yaml_path: Path, pdf_dir: str = ".") -> dict:
 
 
 def run_checker(prompt_text: str, timeout: int = 120) -> str:
+    print(f"\n{'─' * 60}", flush=True)
+    print(f"CONTEXT GIVEN TO CHECKER:", flush=True)
+    print(f"{'─' * 60}", flush=True)
+    print(prompt_text, flush=True)
+    print(f"{'─' * 60}\n", flush=True)
+
     with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as f:
         f.write(prompt_text)
         tmp_path = f.name
