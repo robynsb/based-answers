@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Citation-Grounded Answer</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.0.379/pdf.min.mjs" type="module"></script>
+<style>
+  :root {
+    --bg: #fff;
+    --text: #1a1a2e;
+    --muted: #555;
+    --border: #ddd;
+    --accent: #2563eb;
+    --highlight: rgba(255, 213, 0, 0.35);
+    --card-bg: #f8f9fa;
+    --card-border: #e9ecef;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1a1a2e;
+      --text: #e0e0e0;
+      --muted: #999;
+      --border: #333;
+      --accent: #60a5fa;
+      --highlight: rgba(255, 213, 0, 0.25);
+      --card-bg: #222;
+      --card-border: #333;
+    }
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    padding: 2rem 1rem;
+    max-width: 900px;
+    margin: 0 auto;
+  }
+  h1 { font-size: 1.5rem; margin-bottom: 1.5rem; border-bottom: 2px solid var(--accent); padding-bottom: 0.5rem; }
+  .claim { margin-bottom: 0.75rem; padding-left: 2rem; text-indent: -2rem; }
+  .claim .num { font-weight: 700; color: var(--accent); margin-right: 0.5rem; }
+  .claim sup { font-size: 0.75rem; }
+  .claim sup a { color: var(--accent); text-decoration: none; font-weight: 600; }
+  .claim sup a:hover { text-decoration: underline; }
+
+  .references { margin-top: 2.5rem; }
+  .references h2 { font-size: 1.1rem; margin-bottom: 1rem; border-bottom: 1px solid var(--border); padding-bottom: 0.3rem; }
+  .ref-card {
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: 8px;
+    padding: 1rem;
+    margin-bottom: 1rem;
+  }
+  .ref-card .num {
+    display: inline-block;
+    font-weight: 700;
+    color: var(--accent);
+    margin-right: 0.5rem;
+  }
+  .ref-card blockquote {
+    margin: 0.3rem 0 0.3rem 1.5rem;
+    font-style: italic;
+    color: var(--text);
+    opacity: 0.9;
+  }
+  .ref-card .meta { font-size: 0.85rem; color: var(--muted); }
+  .ref-card .meta a { color: var(--accent); }
+  .pdf-preview-wrap {
+    margin-top: 0.75rem;
+    position: relative;
+    display: inline-block;
+  }
+  .pdf-preview-wrap canvas {
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    max-width: 100%;
+  }
+  .unable {
+    text-align: center;
+    padding: 3rem;
+    color: var(--muted);
+    font-style: italic;
+  }
+  .error-banner {
+    background: #fef2f2;
+    color: #991b1b;
+    padding: 0.5rem 1rem;
+    border-radius: 4px;
+    margin-bottom: 1rem;
+    font-size: 0.85rem;
+  }
+  @media (prefers-color-scheme: dark) {
+    .error-banner {
+      background: #3b1a1a;
+      color: #fca5a5;
+    }
+  }
+</style>
+</head>
+<body>
+{% if errors %}
+<div class="error-banner">{{ errors | join("<br>") }}</div>
+{% endif %}
+
+<h1>{{ question }}</h1>
+
+{% if unable %}
+<p class="unable">Unable to answer this question given the sources.</p>
+{% else %}
+  {% for answer in answers %}
+    <p class="claim">
+      <span class="num">{{ answer.number }}.</span>
+      {{ answer.claim }}
+      <sup>
+        {% for cit in answer.citations %}
+        <a href="file://{{ cit.source_path }}#page={{ cit.page }}">{{ cit.num }}</a>{% if not loop.last %},{% endif %}
+        {% endfor %}
+      </sup>
+    </p>
+  {% endfor %}
+
+  <section class="references">
+    <h2>References</h2>
+    {% for ref in all_references %}
+    <div class="ref-card">
+      <div>
+        <span class="num">[{{ ref.num }}]</span>
+        <span class="meta">
+          <a href="file://{{ ref.source_path }}#page={{ ref.page }}">p.{{ ref.page }}</a>
+          &mdash; {{ ref.source_name }}
+        </span>
+      </div>
+      <blockquote>&ldquo;{{ ref.text }}&rdquo;</blockquote>
+      <div class="pdf-preview-wrap" data-pdf="{{ ref.source_path }}" data-page="{{ ref.page }}"
+           data-highlights='{{ ref.highlights_json | safe }}'
+           data-page-w="{{ ref.page_width }}" data-page-h="{{ ref.page_height }}">
+        <canvas></canvas>
+      </div>
+    </div>
+    {% endfor %}
+  </section>
+{% endif %}
+
+<script type="module">
+import * as pdfjsLib from "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.0.379/pdf.min.mjs";
+pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.0.379/pdf.worker.min.mjs";
+
+const SCALE = 0.5;
+
+async function renderPreview(wrap) {
+  const pdfPath = wrap.dataset.pdf;
+  const pageNum = parseInt(wrap.dataset.page, 10);
+  const highlights = JSON.parse(wrap.dataset.highlights || "[]");
+  const pageW = parseFloat(wrap.dataset.pageW);
+  const pageH = parseFloat(wrap.dataset.pageH);
+  const canvas = wrap.querySelector("canvas");
+
+  try {
+    const loadingTask = pdfjsLib.getDocument(pdfPath);
+    const pdf = await loadingTask.promise;
+    const page = await pdf.getPage(pageNum);
+    const viewport = page.getViewport({ scale: SCALE });
+
+    canvas.width = viewport.width;
+    canvas.height = viewport.height;
+    const ctx = canvas.getContext("2d");
+
+    await page.render({ canvasContext: ctx, viewport: viewport }).promise;
+
+    // Draw highlight overlays
+    for (const h of highlights) {
+      const [x0, y0, x1, y1] = h.bbox;
+      const sx = x0 * SCALE;
+      const sy = y0 * SCALE;
+      const sw = (x1 - x0) * SCALE;
+      const sh = (y1 - y0) * SCALE;
+      ctx.fillStyle = "rgba(255, 213, 0, 0.35)";
+      ctx.fillRect(sx, sy, sw, sh);
+    }
+  } catch (e) {
+    // PDF.js failed &mdash; just hide the canvas, content is still visible
+    canvas.style.display = "none";
+  }
+}
+
+document.querySelectorAll(".pdf-preview-wrap").forEach(renderPreview);
+</script>
+</body>
+</html>
