@@ -63,7 +63,7 @@ def ensure_cache_has_pages_data(pdf_path: str, source_name: str, yaml_dir: Path,
     if "pages_data" in data:
         return
     import importlib.util
-    pdf_search_path = str(skill_dir / "pdf_search.py")
+    pdf_search_path = str(skill_dir / "pdf-search.py")
     if not Path(pdf_search_path).exists():
         print(f"Warning: pdf_search.py not found at {pdf_search_path}", file=sys.stderr)
         return
