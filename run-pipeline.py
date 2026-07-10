@@ -2,10 +2,11 @@
 """
 Orchestrator for citation-grounded QA.
 
-Unified FOR loop: runs the search agent (one opencode run per round),
-then runs all three checkers (deterministic, semantic, coherence).
-If any checker fails, feedback is appended to the agent's context
-and the loop continues with a fresh round.
+Unified FOR loop with a SINGLE persistent opencode session (--session).
+The search agent runs once with the full context, then all three checkers
+(deterministic, semantic, coherence) run. If any fails, feedback is sent
+as a follow-up message to the SAME session. The agent retains all search
+results and conversation history across rounds.
 
 Usage:
   python3 run-pipeline.py <question> [pdf1 pdf2 ...]
@@ -22,6 +23,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 
@@ -49,15 +51,50 @@ def print_banner(label: str):
     print(f"\n{'#' * 60}\n#  {label}\n{'#' * 60}\n", flush=True)
 
 
-def run_search_agent(prompt_path: Path, question: str, timeout: int = 600) -> int:
-    print(f"\n{'─' * 60}", flush=True)
-    print(f"CONTEXT GIVEN TO {AGENT_NAME}:", flush=True)
-    print(f"{'─' * 60}", flush=True)
-    print(prompt_path.read_text(), flush=True)
-    print(f"{'─' * 60}\n", flush=True)
+def get_session_ids() -> set[str]:
+    cmd = ["opencode", "session", "list", "--format", "json", "--max-count", "50"]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+    try:
+        sessions = json.loads(result.stdout)
+        return {s["id"] for s in sessions if isinstance(s, dict)}
+    except (json.JSONDecodeError, TypeError):
+        return set()
 
-    cmd = ["opencode", "run", "--agent", AGENT_NAME, question, "-f", str(prompt_path)]
-    print(f"  Agent: {AGENT_NAME}", flush=True)
+
+def get_new_session_id(before_ids: set[str], slug: str) -> str | None:
+    cmd = ["opencode", "session", "list", "--format", "json", "--max-count", "50"]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+    try:
+        sessions = json.loads(result.stdout)
+        for s in sessions:
+            if isinstance(s, dict) and s["id"] not in before_ids and s.get("title", "").startswith(slug):
+                return s["id"]
+        for s in sessions:
+            if isinstance(s, dict) and s["id"] not in before_ids:
+                return s["id"]
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return None
+
+
+def run_search_agent(prompt_path: Path | None, question: str, session_id: str | None = None, message: str | None = None, timeout: int = 600) -> tuple[int, str | None]:
+    cmd = ["opencode", "run", "--agent", AGENT_NAME]
+
+    is_first = session_id is None
+    if is_first:
+        slug = derive_slug(question)
+        cmd.extend(["-f", str(prompt_path), "--title", f"citation-qa-{slug}", question])
+        print(f"\n{'─' * 60}", flush=True)
+        print(f"CONTEXT GIVEN TO {AGENT_NAME}:", flush=True)
+        print(f"{'─' * 60}", flush=True)
+        print(prompt_path.read_text(), flush=True)
+        print(f"{'─' * 60}\n", flush=True)
+    else:
+        cmd.extend(["--session", session_id])
+        if message:
+            cmd.append(message)
+
+    print(f"  Agent: {AGENT_NAME}{' (continuing session)' if not is_first else ''}", flush=True)
     print(f"{'-' * 50}", flush=True)
 
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
@@ -79,7 +116,19 @@ def run_search_agent(prompt_path: Path, question: str, timeout: int = 600) -> in
     if proc.returncode != 0:
         print(f"  (exit code {proc.returncode})")
 
-    return proc.returncode
+    new_id = None
+    if is_first:
+        before = get_session_ids()
+        # Re-check after a brief delay to let the session be recorded
+        for _ in range(5):
+            time.sleep(1)
+            new_id = get_new_session_id(before, derive_slug(question))
+            if new_id:
+                break
+        if new_id:
+            print(f"  [Session: {new_id[:8]}...]")
+
+    return proc.returncode, new_id
 
 
 def run_deterministic(yaml_path: Path, pdf_dir: str = ".") -> dict:
@@ -365,14 +414,25 @@ export default tool({{
 
 
 def search_loop(slug: str, question: str, pdf_info: list[dict], rounds: list[dict], pdf_dir: str) -> Path | None:
+    session_id = None
+
     for round_num in range(1, MAX_ROUNDS + 1):
         label = f"ROUND {round_num}/{MAX_ROUNDS}"
         if rounds:
             label += " (with feedback)"
         install_banner(label)
 
-        ctx = write_context(slug, question, pdf_info, rounds)
-        run_search_agent(ctx, question)
+        if round_num == 1:
+            ctx = write_context(slug, question, pdf_info, rounds)
+            _, session_id = run_search_agent(ctx, question, session_id=None)
+            if not session_id:
+                print("  [WARN] Could not determine session ID; retries will be fresh sessions", flush=True)
+        else:
+            msg_lines = [f"Round {round_num}/{MAX_ROUNDS} — the following checks failed. Fix the issues and run verify_citations again."]
+            for i, r in enumerate(rounds, 1):
+                msg_lines.append(f"\n--- Round {i} feedback ---\n{r['feedback']}")
+            message = "\n".join(msg_lines)
+            _, _ = run_search_agent(None, question, session_id=session_id, message=message)
 
         yaml_path = find_yaml(slug)
         if not yaml_path:
