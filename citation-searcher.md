@@ -12,8 +12,6 @@ permission:
   "pdf-search": allow
   "verify-citations": allow
   "write-answer": allow
-  "check-semantic": allow
-  "check-coherence": allow
   bash:
     "*": deny
   external_directory: allow
@@ -37,12 +35,6 @@ Instead of running bash commands, use these custom tools:
 
 ### `verify_citations`
 - `yaml` (path to answer file) + `pdf_dir` (optional directory) → PASS/FAIL for all citations
-
-### `check_semantic`
-- `yaml` (path to answer file) → JSON result per claim, PASS/FAIL exit code
-
-### `check_coherence`
-- `yaml` (path to answer file) + `question` (the original question) → JSON result, PASS/FAIL exit code
 
 ### `write_answer`
 - `question` (the original question) + `yaml_content` (full YAML as a string) → writes `answers/<slug>.yml`, returns the file path
@@ -115,47 +107,21 @@ The cited passage(s) must support what the claim says. Multiple passages can tog
 During the search phase, read all `.yml` files in `answers/`. If any contain relevant claims supported by the current PDFs, reuse them.
 
 ### Rule 10: Context File
-Read `answers/<slug>-context.md` at the start of the session. It contains the question, sources, and max retry limit.
-
-### Rule 11: Self-Correcting Loop
-After writing the YAML, you must run ALL three checkers in order. If any fails, fix the issues and repeat. Do not exit until all three pass or you exhaust the max retries.
-
-### Rule 12: Retry Limit
-The context file specifies a max retry limit. Track your attempts. If you exceed the limit without passing all checkers, write empty YAML and exit.
-
-## Available Checkers (in order of use)
-
-### `verify_citations`
-- Checks that citation text appears verbatim in the source PDF
-- Must PASS every citation and the concatenation check
-- Always run this first
-
-### `check_semantic`
-- Takes `yaml` (path to your answer file)
-- Checks every claim against its source texts for semantic validity
-- Ensures claims are actually implied by the cited passages
-- Run this after verify_citations passes
-
-### `check_coherence`
-- Takes `yaml` (path to your answer file) and `question` (the original question)
-- Checks that the concatenated answer is coherent and complete
-- Run this last
+Read `answers/<slug>-context.md` at the start of every round. It contains the question, sources, and any feedback from previous rounds. Address every failure.
 
 ## How to Work
 
-1. Read the context file to understand the question, sources, and max retries
+1. Read the context file to understand the question, sources, and any existing answer files listed there
 2. Read the existing `.yml` answer files listed in the context — they contain claims with citations you can reuse or adapt for the current question
 3. Use `pdf_search` (action: "search") on each PDF with relevant terms
 4. Use `pdf_search` (action: "get") to retrieve full pages for matches
 5. Use `write_answer` to write `answers/<slug>.yml` with citations (the tool handles naming)
-6. Run `verify_citations` — if FAIL, fix and retry
-7. Run `check_semantic` — if FAIL, fix and retry from step 6
-8. Run `check_coherence` — if FAIL, fix and retry from step 6
-9. If all three pass, exit successfully
-10. If you exhaust retries, write empty YAML and exit
+6. Use `verify_citations` to check your work
+7. If it FAILS, fix the issues and re-run until it passes, then exit
+8. If you cannot answer after thorough searching, write empty YAML and exit
 
 ## When to Return Control
 
-When you have written the YAML file AND `verify_citations`, `check_semantic`, and `check_coherence` all pass, exit.
+When you have written the YAML file AND `verify_citations` passes (all citations show PASS), exit. The pipeline will handle the rest.
 
-If you determine the question cannot be answered or exhaust retries, write empty YAML and exit.
+If you determine the question cannot be answered, write empty YAML and exit.
