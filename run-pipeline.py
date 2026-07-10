@@ -77,11 +77,14 @@ def get_new_session_id(before_ids: set[str], slug: str) -> str | None:
     return None
 
 
-def run_search_agent(prompt_path: Path | None, question: str, session_id: str | None = None, message: str | None = None, timeout: int = 600) -> tuple[int, str | None]:
+def run_search_agent(prompt_path: Path | None, question: str, session_id: str | None = None, message: str | None = None, timeout: int = 600) -> int:
     cmd = ["opencode", "run", "--agent", AGENT_NAME]
 
-    is_first = session_id is None
-    if is_first:
+    if session_id:
+        cmd.extend(["--session", session_id])
+        if message:
+            cmd.append(message)
+    else:
         slug = derive_slug(question)
         cmd.extend(["-f", str(prompt_path), "--title", f"citation-qa-{slug}", question])
         print(f"\n{'─' * 60}", flush=True)
@@ -89,12 +92,9 @@ def run_search_agent(prompt_path: Path | None, question: str, session_id: str | 
         print(f"{'─' * 60}", flush=True)
         print(prompt_path.read_text(), flush=True)
         print(f"{'─' * 60}\n", flush=True)
-    else:
-        cmd.extend(["--session", session_id])
-        if message:
-            cmd.append(message)
 
-    print(f"  Agent: {AGENT_NAME}{' (continuing session)' if not is_first else ''}", flush=True)
+    label = f"{AGENT_NAME}{' (continuing session)' if session_id else ''}"
+    print(f"  Agent: {label}", flush=True)
     print(f"{'-' * 50}", flush=True)
 
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
@@ -116,19 +116,7 @@ def run_search_agent(prompt_path: Path | None, question: str, session_id: str | 
     if proc.returncode != 0:
         print(f"  (exit code {proc.returncode})")
 
-    new_id = None
-    if is_first:
-        before = get_session_ids()
-        # Re-check after a brief delay to let the session be recorded
-        for _ in range(5):
-            time.sleep(1)
-            new_id = get_new_session_id(before, derive_slug(question))
-            if new_id:
-                break
-        if new_id:
-            print(f"  [Session: {new_id[:8]}...]")
-
-    return proc.returncode, new_id
+    return proc.returncode
 
 
 def run_deterministic(yaml_path: Path, pdf_dir: str = ".") -> dict:
@@ -415,6 +403,7 @@ export default tool({{
 
 def search_loop(slug: str, question: str, pdf_info: list[dict], rounds: list[dict], pdf_dir: str) -> Path | None:
     session_id = None
+    before_ids = get_session_ids()
 
     for round_num in range(1, MAX_ROUNDS + 1):
         label = f"ROUND {round_num}/{MAX_ROUNDS}"
@@ -424,15 +413,26 @@ def search_loop(slug: str, question: str, pdf_info: list[dict], rounds: list[dic
 
         if round_num == 1:
             ctx = write_context(slug, question, pdf_info, rounds)
-            _, session_id = run_search_agent(ctx, question, session_id=None)
+            run_search_agent(ctx, question, session_id=None)
+            # Discover the new session ID created by this run
+            for _ in range(5):
+                time.sleep(1)
+                session_id = get_new_session_id(before_ids, slug)
+                if session_id:
+                    print(f"  [Session: {session_id[:8]}...]", flush=True)
+                    break
             if not session_id:
                 print("  [WARN] Could not determine session ID; retries will be fresh sessions", flush=True)
-        else:
+        elif session_id:
             msg_lines = [f"Round {round_num}/{MAX_ROUNDS} — the following checks failed. Fix the issues and run verify_citations again."]
             for i, r in enumerate(rounds, 1):
                 msg_lines.append(f"\n--- Round {i} feedback ---\n{r['feedback']}")
             message = "\n".join(msg_lines)
-            _, _ = run_search_agent(None, question, session_id=session_id, message=message)
+            run_search_agent(None, question, session_id=session_id, message=message)
+        else:
+            # Fallback: fresh context + fresh session (session discovery failed)
+            ctx = write_context(slug, question, pdf_info, rounds)
+            run_search_agent(ctx, question, session_id=None)
 
         yaml_path = find_yaml(slug)
         if not yaml_path:
@@ -556,9 +556,12 @@ def main():
 
     if yaml_path is None:
         print(f"\n[EXHAUSTED] All {MAX_ROUNDS} rounds failed.")
-        yaml_path = Path("answers") / f"{slug}.yml"
-        yaml_path.write_text(f"question: \"{question}\"\nconcatenation: \"\"\nanswers: []\n")
-        print(f"Wrote empty answer: {yaml_path}")
+        yaml_path = find_yaml(slug) or Path("answers") / f"{slug}.yml"
+        if not yaml_path.exists():
+            yaml_path.write_text(f"question: \"{question}\"\nconcatenation: \"\"\nanswers: []\n")
+            print(f"Wrote empty answer: {yaml_path}")
+        else:
+            print(f"Using last answer: {yaml_path}")
 
     # Format & open
     print()
