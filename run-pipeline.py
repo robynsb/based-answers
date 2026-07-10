@@ -2,13 +2,13 @@
 """
 Orchestrator for citation-grounded QA.
 
-Spawns opencode agents to search PDFs, answer questions, and verify
-citations deterministically. Handles retry loops and auto-installs the
-citation-searcher agent.
+Spawns a single opencode agent session that searches PDFs, answers
+questions, and self-corrects using verify_citations, check_semantic,
+and check_coherence tools in an internal loop.
 
 Usage:
   python3 run-pipeline.py <question> [pdf1 pdf2 ...]
-  
+
 If no PDFs are given, all *.pdf in the working directory are used.
 Must be run from the skill directory (nix develop handles dependencies).
 """
@@ -20,7 +20,6 @@ import re
 import shutil
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 
@@ -56,7 +55,7 @@ def run_search_agent(prompt_path: Path, question: str, timeout: int = 600) -> in
     print(f"{'─' * 60}\n", flush=True)
 
     cmd = ["opencode", "run", "--agent", AGENT_NAME, question, "-f", str(prompt_path)]
-    print(f"  Agent: {AGENT_NAME}", flush=True)
+    print(f"  Agent: {AGENT_NAME} (single session, self-correcting)", flush=True)
     print(f"{'-' * 50}", flush=True)
 
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
@@ -93,37 +92,13 @@ def run_deterministic(yaml_path: Path, pdf_dir: str = ".") -> dict:
     return {"passed": result.returncode == 0, "output": output}
 
 
-def run_checker(prompt_text: str, timeout: int = 120) -> str:
-    print(f"\n{'─' * 60}", flush=True)
-    print(f"CONTEXT GIVEN TO CHECKER:", flush=True)
-    print(f"{'─' * 60}", flush=True)
-    print(prompt_text, flush=True)
-    print(f"{'─' * 60}\n", flush=True)
-
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as f:
-        f.write(prompt_text)
-        tmp_path = f.name
-
-    cmd = ["opencode", "run", "--agent", CHECKER_NAME, "Evaluate the following.", "-f", tmp_path]
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
-    lines = []
-    for line in iter(proc.stdout.readline, ""):
-        if not line:
-            break
-        print(line, end="", flush=True)
-        lines.append(line)
-    proc.wait(timeout=timeout)
-    os.unlink(tmp_path)
-    return "".join(lines)
-
-
 def _agent_instructions() -> str:
     text = AGENT_SRC.read_text()
     parts = text.split("---", 2)
     return parts[2].strip() if len(parts) > 2 else text
 
 
-def write_context(slug: str, question: str, pdf_info: list[dict], rounds: list[dict]) -> Path:
+def write_context(slug: str, question: str, pdf_info: list[dict]) -> Path:
     path = Path("answers") / f"{slug}-context.md"
     lines = [
         "# Citation-Grounded QA Pipeline",
@@ -137,7 +112,6 @@ def write_context(slug: str, question: str, pdf_info: list[dict], rounds: list[d
         lines.append(f"- {info['file']} (pages: {info['pages']}, chunks: {info['chunks']}, ~{info['tokens']}K tokens)")
         lines.append(f"  Full path: {info['abspath']}")
 
-    # List existing answer files the agent can reuse
     existing = sorted(Path("answers").glob("*.yml"))
     if existing:
         lines += ["", "## Existing Answer Files (read with `read` tool to reuse claims)"]
@@ -150,14 +124,9 @@ def write_context(slug: str, question: str, pdf_info: list[dict], rounds: list[d
         "",
         _agent_instructions(),
         "",
-        "## Prior Attempts & Feedback",
+        f"## Max Retry Rounds",
+        f"You have up to {MAX_ROUNDS} attempts total across all checkers. If none pass, write empty YAML.",
     ]
-
-    if not rounds:
-        lines.append("None yet. This is your first attempt.")
-    else:
-        for i, r in enumerate(rounds, 1):
-            lines += ["", f"### Round {i}", "```", r["feedback"], "```"]
 
     path.write_text("\n".join(lines) + "\n")
     return path
@@ -174,142 +143,14 @@ def find_yaml(slug: str) -> Path | None:
     return max(candidates, key=lambda p: p.stat().st_mtime)
 
 
-def run_semantic_checkers(yaml_path: Path, question: str) -> list[dict]:
-    try:
-        import yaml as pyyaml
-        with open(yaml_path) as f:
-            data = pyyaml.safe_load(f)
-        answers = data.get("answers", []) if data else []
-    except Exception:
-        answers = []
-
-    failures = []
-    if not answers:
-        return failures
-
-    for i, a in enumerate(answers):
-        claim = a.get("claim", "")
-        if not claim:
-            continue
-        texts = [c.get("text", "") for c in a.get("citations", [])]
-        rubric = f"""You are a claim verifier.
-
-CLAIM: {claim}
-
-SOURCE_TEXTS:
-"""
-        for t in texts:
-            rubric += f'  - "{t}"\n'
-        rubric += """
-
-OUT-OF-CONTEXT CHECK: Every source must include text before, text related to the claim, and text after. If bare snippet → FAIL.
-
-Does the SYNTHESIS of all SOURCE_TEXTS strictly imply CLAIM?
-- YES: Respond "PASS"
-- FAIL (out-of-context): Respond "FAIL: out-of-context — <why>"
-- NO: Respond "FAIL: <what cannot be inferred>"
-
-Rules: direct logical inference OK. Cross-source inference OK. External domain knowledge = FAIL. Never use your own knowledge.
-"""
-        result = run_checker(rubric)
-        passed = "PASS" in result.upper() and "FAIL" not in result.upper()
-        print(f"  {'[PASS]' if passed else '[FAIL]'} Claim {i+1}: {claim[:80]}")
-        if not passed:
-            failures.append({"claim": claim, "output": result[:2000]})
-
-    return failures
-
-
-def run_coherence_checker(yaml_path: Path, question: str) -> dict:
-    try:
-        import yaml as pyyaml
-        with open(yaml_path) as f:
-            data = pyyaml.safe_load(f)
-        concatenation = (data or {}).get("concatenation", "")
-    except Exception:
-        concatenation = ""
-
-    if not concatenation:
-        return {"passed": True, "output": "No concatenation to check"}
-
-    rubric = f"""You are a coherence and completeness verifier.
-
-QUESTION: {question}
-
-CONCATENATION: {concatenation}
-
-Evaluate:
-1. COHERENCE: sensible paragraph with established concepts?
-2. COMPLETENESS: totally answers the question?
-
-Respond with:
-- PASS
-- FAIL: <what is missing, unclear, or doesn't make sense>
-"""
-    result = run_checker(rubric)
-    passed = "PASS" in result.upper() and "FAIL" not in result.upper()
-    print(f"  {'[PASS]' if passed else '[FAIL]'} Coherence check")
-    return {"passed": passed, "output": result[:2000]}
-
-
-def search_loop(slug: str, question: str, pdf_info: list[dict], rounds: list[dict], pdf_dir: str) -> Path | None:
-    for round_num in range(1, MAX_ROUNDS + 1):
-        label = f"ROUND {round_num}/{MAX_ROUNDS}"
-        if rounds:
-            label += " (with feedback)"
-        install_banner(label)
-
-        ctx = write_context(slug, question, pdf_info, rounds)
-        run_search_agent(ctx, question)
-
-        yaml_path = find_yaml(slug)
-        if not yaml_path:
-            rounds.append({"feedback": "No YAML file produced. Search PDFs and write answers/<slug>.yml."})
-            print("  [FAIL] No YAML file found\n")
-            continue
-
-        # ── Deterministic verification ──
-        det = run_deterministic(yaml_path, pdf_dir)
-        if not det["passed"]:
-            print(f"  [FAIL] Deterministic verification failed\n")
-            rounds.append({"feedback": f"Deterministic verification FAILED for {yaml_path.name}:\n" + det["output"]})
-            continue
-
-        print(f"  [PASS] {yaml_path.name} — all citations verified\n")
-
-        # ── Semantic checkers ──
-        semantic_failures = run_semantic_checkers(yaml_path, question)
-        if semantic_failures:
-            for sf in semantic_failures:
-                rounds.append({"feedback": f"Semantic checker FAILED for claim: {sf['claim']}\nChecker output:\n{sf['output']}"})
-            print(f"  Restarting with {len(semantic_failures)} semantic failure(s)...\n")
-            continue
-
-        # ── Coherence checker ──
-        coherence = run_coherence_checker(yaml_path, question)
-        if not coherence["passed"]:
-            rounds.append({"feedback": f"Coherence checker FAILED:\n{coherence['output']}"})
-            print(f"  Restarting with coherence failure...\n")
-            continue
-
-        # All checks passed
-        return yaml_path
-
-    return None
-
-
-def install_banner(label: str):
-    print(f"\n{'#' * 60}", flush=True)
-    print(f"#  {label}", flush=True)
-    print(f"{'#' * 60}", flush=True)
-
-
 def install_tools():
     TOOLS_DIR.mkdir(parents=True, exist_ok=True)
 
     skill_dir_escaped = str(SKILL_DIR).replace("\\", "\\\\")
     pdf_search_ts = TOOLS_DIR / "pdf-search.ts"
     verify_citations_ts = TOOLS_DIR / "verify-citations.ts"
+    check_semantic_ts = TOOLS_DIR / "check-semantic.ts"
+    check_coherence_ts = TOOLS_DIR / "check-coherence.ts"
 
     pdf_search_ts.write_text(f"""import {{ tool }} from "@opencode-ai/plugin"
 import {{ execSync }} from "child_process"
@@ -414,7 +255,56 @@ export default tool({{
 }})
 """)
 
-    print(f"Installed tools: pdf-search, verify-citations, write-answer")
+    check_semantic_ts.write_text(f"""import {{ tool }} from "@opencode-ai/plugin"
+import {{ execSync }} from "child_process"
+
+const SKILL_DIR = {json.dumps(str(SKILL_DIR))}
+
+export default tool({{
+  description: "Check all claims in a YAML answer against their source texts for semantic validity",
+  args: {{
+    yaml: tool.schema.string().describe("Path to the YAML answer file"),
+  }},
+  async execute(args) {{
+    try {{
+      const result = execSync(
+        `nix develop "path:${{SKILL_DIR}}" -c python3 ${{SKILL_DIR}}/check-semantic.py ${{JSON.stringify(args.yaml)}}`,
+        {{ timeout: 180000, encoding: "utf-8" }}
+      ).trim()
+      return result
+    }} catch (e: any) {{
+      return e.stdout?.trim() || e.stderr?.trim() || e.message
+    }}
+  }},
+}})
+""")
+
+    check_coherence_ts.write_text(f"""import {{ tool }} from "@opencode-ai/plugin"
+import {{ execSync }} from "child_process"
+
+const SKILL_DIR = {json.dumps(str(SKILL_DIR))}
+
+export default tool({{
+  description: "Check the coherence and completeness of the concatenated answer against the question",
+  args: {{
+    yaml: tool.schema.string().describe("Path to the YAML answer file"),
+    question: tool.schema.string().describe("The original question"),
+  }},
+  async execute(args) {{
+    try {{
+      const result = execSync(
+        `nix develop "path:${{SKILL_DIR}}" -c python3 ${{SKILL_DIR}}/check-coherence.py ${{JSON.stringify(args.yaml)}} ${{JSON.stringify(args.question)}}`,
+        {{ timeout: 180000, encoding: "utf-8" }}
+      ).trim()
+      return result
+    }} catch (e: any) {{
+      return e.stdout?.trim() || e.stderr?.trim() || e.message
+    }}
+  }},
+}})
+""")
+
+    print(f"Installed tools: pdf-search, verify-citations, write-answer, check-semantic, check-coherence")
 
 
 def main():
@@ -493,15 +383,17 @@ def main():
         pdf_info.append(info)
         print(f"  {info['file']}: {info['pages']} pages, {info['chunks']} chunks, ~{info['tokens']}K tokens")
 
-    # Determine PDF directory for verify-citations
     pdf_dir = str(pdf_paths[0].parent) if pdf_paths else "."
 
-    # Main search loop
-    rounds = []
-    yaml_path = search_loop(slug, question, pdf_info, rounds, pdf_dir)
+    # Single shot: write context and run the search agent once
+    print_banner("SEARCH AGENT (single session, self-correcting)")
+    ctx = write_context(slug, question, pdf_info)
+    run_search_agent(ctx, question)
 
+    # Find result
+    yaml_path = find_yaml(slug)
     if yaml_path is None:
-        print(f"\n[EXHAUSTED] All {MAX_ROUNDS} rounds failed.")
+        print(f"\n[FAIL] No YAML file produced.")
         yaml_path = Path("answers") / f"{slug}.yml"
         yaml_path.write_text(f"question: \"{question}\"\nconcatenation: \"\"\nanswers: []\n")
         print(f"Wrote empty answer: {yaml_path}")
