@@ -174,9 +174,87 @@ def find_yaml(slug: str) -> Path | None:
     return max(candidates, key=lambda p: p.stat().st_mtime)
 
 
+def run_semantic_checkers(yaml_path: Path, question: str) -> list[dict]:
+    try:
+        import yaml as pyyaml
+        with open(yaml_path) as f:
+            data = pyyaml.safe_load(f)
+        answers = data.get("answers", []) if data else []
+    except Exception:
+        answers = []
+
+    failures = []
+    if not answers:
+        return failures
+
+    for i, a in enumerate(answers):
+        claim = a.get("claim", "")
+        if not claim:
+            continue
+        texts = [c.get("text", "") for c in a.get("citations", [])]
+        rubric = f"""You are a claim verifier.
+
+CLAIM: {claim}
+
+SOURCE_TEXTS:
+"""
+        for t in texts:
+            rubric += f'  - "{t}"\n'
+        rubric += """
+
+OUT-OF-CONTEXT CHECK: Every source must include text before, text related to the claim, and text after. If bare snippet → FAIL.
+
+Does the SYNTHESIS of all SOURCE_TEXTS strictly imply CLAIM?
+- YES: Respond "PASS"
+- FAIL (out-of-context): Respond "FAIL: out-of-context — <why>"
+- NO: Respond "FAIL: <what cannot be inferred>"
+
+Rules: direct logical inference OK. Cross-source inference OK. External domain knowledge = FAIL. Never use your own knowledge.
+"""
+        result = run_checker(rubric)
+        passed = "PASS" in result.upper() and "FAIL" not in result.upper()
+        print(f"  {'[PASS]' if passed else '[FAIL]'} Claim {i+1}: {claim[:80]}")
+        if not passed:
+            failures.append({"claim": claim, "output": result[:2000]})
+
+    return failures
+
+
+def run_coherence_checker(yaml_path: Path, question: str) -> dict:
+    try:
+        import yaml as pyyaml
+        with open(yaml_path) as f:
+            data = pyyaml.safe_load(f)
+        concatenation = (data or {}).get("concatenation", "")
+    except Exception:
+        concatenation = ""
+
+    if not concatenation:
+        return {"passed": True, "output": "No concatenation to check"}
+
+    rubric = f"""You are a coherence and completeness verifier.
+
+QUESTION: {question}
+
+CONCATENATION: {concatenation}
+
+Evaluate:
+1. COHERENCE: sensible paragraph with established concepts?
+2. COMPLETENESS: totally answers the question?
+
+Respond with:
+- PASS
+- FAIL: <what is missing, unclear, or doesn't make sense>
+"""
+    result = run_checker(rubric)
+    passed = "PASS" in result.upper() and "FAIL" not in result.upper()
+    print(f"  {'[PASS]' if passed else '[FAIL]'} Coherence check")
+    return {"passed": passed, "output": result[:2000]}
+
+
 def search_loop(slug: str, question: str, pdf_info: list[dict], rounds: list[dict], pdf_dir: str) -> Path | None:
     for round_num in range(1, MAX_ROUNDS + 1):
-        label = f"SEARCH ROUND {round_num}/{MAX_ROUNDS}"
+        label = f"ROUND {round_num}/{MAX_ROUNDS}"
         if rounds:
             label += " (with feedback)"
         install_banner(label)
@@ -190,13 +268,32 @@ def search_loop(slug: str, question: str, pdf_info: list[dict], rounds: list[dic
             print("  [FAIL] No YAML file found\n")
             continue
 
-        v = run_deterministic(yaml_path, pdf_dir)
-        if v["passed"]:
-            print(f"  [PASS] {yaml_path.name} — all citations verified\n")
-            return yaml_path
+        # ── Deterministic verification ──
+        det = run_deterministic(yaml_path, pdf_dir)
+        if not det["passed"]:
+            print(f"  [FAIL] Deterministic verification failed\n")
+            rounds.append({"feedback": f"Deterministic verification FAILED for {yaml_path.name}:\n" + det["output"]})
+            continue
 
-        print(f"  [FAIL] Verification failed\n")
-        rounds.append({"feedback": f"Deterministic verification FAILED for {yaml_path.name}:\n" + v["output"]})
+        print(f"  [PASS] {yaml_path.name} — all citations verified\n")
+
+        # ── Semantic checkers ──
+        semantic_failures = run_semantic_checkers(yaml_path, question)
+        if semantic_failures:
+            for sf in semantic_failures:
+                rounds.append({"feedback": f"Semantic checker FAILED for claim: {sf['claim']}\nChecker output:\n{sf['output']}"})
+            print(f"  Restarting with {len(semantic_failures)} semantic failure(s)...\n")
+            continue
+
+        # ── Coherence checker ──
+        coherence = run_coherence_checker(yaml_path, question)
+        if not coherence["passed"]:
+            rounds.append({"feedback": f"Coherence checker FAILED:\n{coherence['output']}"})
+            print(f"  Restarting with coherence failure...\n")
+            continue
+
+        # All checks passed
+        return yaml_path
 
     return None
 
@@ -408,102 +505,6 @@ def main():
         yaml_path = Path("answers") / f"{slug}.yml"
         yaml_path.write_text(f"question: \"{question}\"\nconcatenation: \"\"\nanswers: []\n")
         print(f"Wrote empty answer: {yaml_path}")
-
-    # Semantic checkers
-    try:
-        import yaml as pyyaml
-        with open(yaml_path) as f:
-            data = pyyaml.safe_load(f)
-        answers = data.get("answers", []) if data else []
-    except Exception:
-        answers = []
-
-    semantic_failures = []
-    if answers:
-        print()
-        install_banner(f"SEMANTIC CHECKERS ({len(answers)} claims)")
-
-        for i, a in enumerate(answers):
-            claim = a.get("claim", "")
-            if not claim:
-                continue
-            texts = [c.get("text", "") for c in a.get("citations", [])]
-            rubric = f"""You are a claim verifier.
-
-CLAIM: {claim}
-
-SOURCE_TEXTS:
-"""
-            for t in texts:
-                rubric += f"  - \"{t}\"\n"
-            rubric += """
-
-OUT-OF-CONTEXT CHECK: Every source must include text before, text related to the claim, and text after. If bare snippet → FAIL.
-
-Does the SYNTHESIS of all SOURCE_TEXTS strictly imply CLAIM?
-- YES: Respond "PASS"
-- FAIL (out-of-context): Respond "FAIL: out-of-context — <why>"
-- NO: Respond "FAIL: <what cannot be inferred>"
-
-Rules: direct logical inference OK. Cross-source inference OK. External domain knowledge = FAIL. Never use your own knowledge.
-"""
-            result = run_checker(rubric)
-            passed = "PASS" in result.upper() and "FAIL" not in result.upper()
-            print(f"  {'[PASS]' if passed else '[FAIL]'} Claim {i+1}: {claim[:80]}")
-            if not passed:
-                semantic_failures.append({"claim": claim, "output": result[:2000]})
-
-    if semantic_failures:
-        for sf in semantic_failures:
-            rounds.append({"feedback": f"Semantic checker FAILED for claim: {sf['claim']}\nChecker output:\n{sf['output']}"})
-        print(f"\n  Restarting search with {len(semantic_failures)} semantic failure(s)...")
-        yaml_path = search_loop(slug, question, pdf_info, rounds, pdf_dir)
-
-        if yaml_path is None:
-            print(f"\n[EXHAUSTED] After semantic failures.")
-            yaml_path = Path("answers") / f"{slug}.yml"
-            if not yaml_path.exists():
-                yaml_path.write_text(f"question: \"{question}\"\nconcatenation: \"\"\nanswers: []\n")
-            print(f"Proceeding with: {yaml_path}")
-
-    # Coherence checker
-    try:
-        with open(yaml_path) as f:
-            data = pyyaml.safe_load(f)
-        concatenation = (data or {}).get("concatenation", "")
-    except Exception:
-        concatenation = ""
-
-    if concatenation:
-        print()
-        print_banner("COHERENCE CHECKER")
-
-        rubric = f"""You are a coherence and completeness verifier.
-
-QUESTION: {question}
-
-CONCATENATION: {concatenation}
-
-Evaluate:
-1. COHERENCE: sensible paragraph with established concepts?
-2. COMPLETENESS: totally answers the question?
-
-Respond with:
-- PASS
-- FAIL: <what is missing, unclear, or doesn't make sense>
-"""
-        result = run_checker(rubric)
-        passed = "PASS" in result.upper() and "FAIL" not in result.upper()
-        print(f"  {'[PASS]' if passed else '[FAIL]'} Coherence check")
-        if not passed:
-            rounds.append({"feedback": f"Coherence checker FAILED:\n{result[:2000]}"})
-            print(f"\n  Restarting search with coherence failure...")
-            yaml_path = search_loop(slug, question, pdf_info, rounds, pdf_dir)
-            if yaml_path is None:
-                print(f"\n[EXHAUSTED] After coherence search.")
-                yaml_path = Path("answers") / f"{slug}.yml"
-                if not yaml_path.exists():
-                    yaml_path.write_text(f"question: \"{question}\"\nconcatenation: \"\"\nanswers: []\n")
 
     # Format & open
     print()
