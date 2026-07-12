@@ -37,6 +37,12 @@ CHECKER_DST = Path.home() / ".config/opencode/agents" / f"{CHECKER_NAME}.md"
 TOOLS_DIR = Path.home() / ".config/opencode/tools"
 MAX_ROUNDS = 5
 
+# Per-agent stream colors so interleaved opencode output is tellable apart
+SEARCH_COLOR = "\033[36m"     # cyan: citation-searcher
+SEMANTIC_COLOR = "\033[35m"   # magenta: semantic checks
+COHERENCE_COLOR = "\033[34m"  # blue: coherence check
+RESET = "\033[0m"
+
 
 def derive_slug(question: str) -> str:
     slug = question.lower()
@@ -103,7 +109,7 @@ def run_search_agent(prompt_path: Path | None, question: str, session_id: str | 
     for line in iter(proc.stdout.readline, ""):
         if not line:
             break
-        print(line, end="", flush=True)
+        print(f"{SEARCH_COLOR}{line}{RESET}", end="", flush=True)
         if "permission requested" in line.lower() or "auto-rejecting" in line.lower():
             denied += 1
             print(f"  \033[33m[DENIED]\033[0m {line.strip()}")
@@ -131,7 +137,7 @@ def run_deterministic(yaml_path: Path, pdf_dir: str = ".") -> dict:
     return {"passed": result.returncode == 0, "output": output}
 
 
-def run_checker(prompt_text: str, timeout: int = 120) -> str:
+def run_checker(prompt_text: str, color: str = "", timeout: int = 120) -> str:
     with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as f:
         f.write(prompt_text)
         tmp_path = f.name
@@ -142,6 +148,7 @@ def run_checker(prompt_text: str, timeout: int = 120) -> str:
     for line in iter(proc.stdout.readline, ""):
         if not line:
             break
+        print(f"{color}{line}{RESET if color else ''}", end="", flush=True)
         lines.append(line)
     proc.wait(timeout=timeout)
     os.unlink(tmp_path)
@@ -192,7 +199,7 @@ Does the SYNTHESIS of all SOURCE_TEXTS together with PREVIOUS_CLAIMS strictly im
 
 Rules: direct logical inference OK. Cross-source inference OK. PREVIOUS_CLAIMS may be treated as established facts and combined with SOURCE_TEXTS. External domain knowledge = FAIL. Never use your own knowledge.
 """
-        result = run_checker(rubric)
+        result = run_checker(rubric, color=SEMANTIC_COLOR)
         passed = "PASS" in result.upper() and "FAIL" not in result.upper()
         print(f"  {'[PASS]' if passed else '[FAIL]'} Claim {i+1}: {claim[:80]}")
         if not passed:
@@ -227,7 +234,7 @@ Respond with:
 - PASS
 - FAIL: <what is missing, unclear, or doesn't make sense>
 """
-    result = run_checker(rubric)
+    result = run_checker(rubric, color=COHERENCE_COLOR)
     passed = "PASS" in result.upper() and "FAIL" not in result.upper()
     print(f"  {'[PASS]' if passed else '[FAIL]'} Coherence check")
     return {"passed": passed, "output": result[:2000]}
