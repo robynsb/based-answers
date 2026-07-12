@@ -60,6 +60,7 @@ def main():
         if not claim:
             continue
         texts = [c.get("text", "") for c in a.get("citations", [])]
+        previous_claims = [p.get("claim", "") for p in answers[:i] if p.get("claim", "")]
 
         rubric = f"""You are a claim verifier.
 
@@ -69,16 +70,22 @@ SOURCE_TEXTS:
 """
         for t in texts:
             rubric += f"  - \"{t}\"\n"
+        rubric += "\nPREVIOUS_CLAIMS (assume these are true; they may be used as premises):\n"
+        if previous_claims:
+            for p in previous_claims:
+                rubric += f"  - \"{p}\"\n"
+        else:
+            rubric += "  (none)\n"
         rubric += """
 
 OUT-OF-CONTEXT CHECK: Every source must include text before, text related to the claim, and text after. If bare snippet → FAIL.
 
-Does the SYNTHESIS of all SOURCE_TEXTS strictly imply CLAIM?
+Does the SYNTHESIS of all SOURCE_TEXTS together with PREVIOUS_CLAIMS strictly imply CLAIM?
 - YES: Respond "PASS"
 - FAIL (out-of-context): Respond "FAIL: out-of-context — <why>"
 - NO: Respond "FAIL: <what cannot be inferred>"
 
-Rules: direct logical inference OK. Cross-source inference OK. External domain knowledge = FAIL. Never use your own knowledge.
+Rules: direct logical inference OK. Cross-source inference OK. PREVIOUS_CLAIMS may be treated as established facts and combined with SOURCE_TEXTS. External domain knowledge = FAIL. Never use your own knowledge.
 """
         output = run_checker(rubric)
         passed = "PASS" in output.upper() and "FAIL" not in output.upper()
