@@ -35,7 +35,7 @@ CHECKER_NAME = "coherence-checker"
 CHECKER_SRC = SKILL_DIR / f"{CHECKER_NAME}.md"
 CHECKER_DST = Path.home() / ".config/opencode/agents" / f"{CHECKER_NAME}.md"
 TOOLS_DIR = Path.home() / ".config/opencode/tools"
-MAX_ROUNDS = 3
+MAX_ROUNDS = 5
 
 
 def derive_slug(question: str) -> str:
