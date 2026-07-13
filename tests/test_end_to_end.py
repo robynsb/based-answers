@@ -62,6 +62,26 @@ class TestEndToEnd(unittest.TestCase):
                     f"verification failed:\n{result.stdout}\n{result.stderr}",
                 )
 
+    def test_short_citation_fails_verification(self):
+        # verbatim and on the right page, but under the 200-char minimum
+        yaml_path = self.work / "short-citation.yml"
+        yaml_path.write_text(
+            'question: "What frequency?"\n'
+            'answers:\n'
+            '  - claim: "Dual ARM Cortex-M0+ @ 133MHz"\n'
+            '    citations:\n'
+            '      - text: "Dual ARM Cortex-M0+ @ 133MHz"\n'
+            '        page: 9\n'
+            f'        source: "{PDF_NAME}"\n'
+        )
+        result = subprocess.run(
+            [sys.executable, str(SKILL_DIR / "verify-citations.py"),
+             "--pdf-dir", ".", str(yaml_path)],
+            capture_output=True, text=True,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("too short", result.stdout)
+
     def test_build_context_default_uses_file_urls(self):
         context = format_answers.build_context(self.work / "answers" / "rp2040-pull-blocking-detection.yml")
         self.assertFalse(context["unable"])

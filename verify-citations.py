@@ -200,6 +200,10 @@ def _page_text(cache: dict, page: int) -> str | None:
 # quote on the stated page, so a trivial shared word can't validate a wrong page
 MIN_CROSS_PAGE_CHARS = 20
 
+# Every citation must quote at least this many characters, so claims are backed
+# by full passages with surrounding context rather than bare snippets
+MIN_CITATION_CHARS = 200
+
 
 def _split_match(citation_text: str, first_text: str, second_text: str,
                  max_prefix_words: int | None = None) -> tuple[str, str] | None:
@@ -333,7 +337,13 @@ def main():
             cache = load_pdf_cache(source)
 
             result = None
-            if cache is None:
+            if len(cit_text) < MIN_CITATION_CHARS:
+                status = "FAIL"
+                reason = (f"Citation too short: {len(cit_text)} chars, minimum is "
+                          f"{MIN_CITATION_CHARS}. Quote a longer contiguous passage "
+                          f"around the supporting text")
+                failed += 1
+            elif cache is None:
                 status = "FAIL"
                 reason = f"Cache not found for {source}"
                 failed += 1
