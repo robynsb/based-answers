@@ -191,16 +191,58 @@ def cmd_info(data: dict):
     print(f"Estimated tokens: {data['estimated_tokens']}")
 
 
+# Typographic characters folded to ASCII so queries typed with plain quotes,
+# hyphens, or spaces still match the PDF's text (e.g. ' vs ’ in "instruction's")
+CHAR_FOLD = {
+    "‘": "'", "’": "'", "‚": "'", "‛": "'",
+    "“": '"', "”": '"', "„": '"',
+    "–": "-", "—": "-", "−": "-",
+    " ": " ",
+    "ﬀ": "ff", "ﬁ": "fi", "ﬂ": "fl", "ﬃ": "ffi", "ﬄ": "ffl",
+}
+
+
+def normalize_for_match(text: str) -> tuple[str, list[int]]:
+    """Fold typographic chars and collapse whitespace (incl. newlines).
+
+    Returns the normalized string plus a map from each normalized index back
+    to the original index, so matches can be located in the verbatim text.
+    """
+    out = []
+    idx_map = []
+    prev_space = False
+    for i, ch in enumerate(text):
+        for c in CHAR_FOLD.get(ch, ch):
+            if c.isspace():
+                if not prev_space:
+                    out.append(" ")
+                    idx_map.append(i)
+                    prev_space = True
+            else:
+                out.append(c)
+                idx_map.append(i)
+                prev_space = False
+    return "".join(out), idx_map
+
+
 def cmd_search(data: dict, query: str, limit: int = 10, context_chars: int = 300):
-    pattern = re.compile(re.escape(query), re.IGNORECASE)
+    norm_query, _ = normalize_for_match(query)
+    norm_query = norm_query.strip()
+    if not norm_query:
+        print("No matches found.")
+        return
+    pattern = re.compile(re.escape(norm_query), re.IGNORECASE)
     matches = []
     for chunk in data["chunks"]:
-        if pattern.search(chunk["text"]):
-            text = chunk["text"]
-            # Find position of match for context window
-            match = pattern.search(text)
-            start = max(0, match.start() - context_chars // 2)
-            end = min(len(text), match.end() + context_chars // 2)
+        text = chunk["text"]
+        norm_text, idx_map = normalize_for_match(text)
+        match = pattern.search(norm_text)
+        if match:
+            # Map match back to the verbatim text for the context window
+            orig_start = idx_map[match.start()]
+            orig_end = idx_map[match.end() - 1] + 1
+            start = max(0, orig_start - context_chars // 2)
+            end = min(len(text), orig_end + context_chars // 2)
             snippet = text[start:end]
             # Add ellipsis if truncated
             if start > 0:

@@ -191,6 +191,8 @@ SOURCE_TEXTS:
         rubric += """
 
 OUT-OF-CONTEXT CHECK: Every source must include text before, text related to the claim, and text after. If bare snippet → FAIL.
+If the source text does not itself name what the statement is about — i.e. the subject must be inferred (e.g. it only says "It was completed a year later" or "This method is unreliable" without naming the thing) — that source is out-of-context. If the claim needs or uses that inferred subject, respond FAIL.
+PREVIOUS_CLAIMS may only be combined with what the sources state; never use them to resolve pronouns or fill in the subject of a source text.
 
 Does the SYNTHESIS of all SOURCE_TEXTS together with PREVIOUS_CLAIMS strictly imply CLAIM?
 - YES: Respond "PASS"

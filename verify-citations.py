@@ -151,25 +151,39 @@ def check_citation(citation_text: str, page: int, cache: dict) -> dict:
     if norm_citation.lower() in norm_page.lower():
         return {"found": True, "method": "normalized_case_insensitive"}
 
-    # Check 4: remove hyphens (handles "sea-level" vs "sealevel" after dehyphenation)
-    nohyphen_citation = norm_citation.replace("-", "").replace("–", "")
-    nohyphen_page = norm_page.replace("-", "").replace("–", "")
+    # Check 4: fold typographic characters (curly quotes/dashes, nbsp, ligatures)
+    # so "instruction's" matches the PDF's "instruction’s"
+    def _fold_typography(t):
+        for a, b in [("‘", "'"), ("’", "'"), ("‚", "'"), ("‛", "'"),
+                     ("“", '"'), ("”", '"'), ("„", '"'),
+                     ("–", "-"), ("—", "-"), ("−", "-"), (" ", " "),
+                     ("ﬀ", "ff"), ("ﬁ", "fi"), ("ﬂ", "fl"), ("ﬃ", "ffi"), ("ﬄ", "ffl")]:
+            t = t.replace(a, b)
+        return t
+    folded_citation = _fold_typography(norm_citation).lower()
+    folded_page = _fold_typography(norm_page).lower()
+    if folded_citation in folded_page:
+        return {"found": True, "method": "typography_folded"}
+
+    # Check 5: remove hyphens (handles "sea-level" vs "sealevel" after dehyphenation)
+    nohyphen_citation = folded_citation.replace("-", "")
+    nohyphen_page = folded_page.replace("-", "")
     if nohyphen_citation in nohyphen_page:
         return {"found": True, "method": "hyphen_normalized"}
 
-    # Check 5: normalize ASCII arrows to Unicode
+    # Check 6: normalize ASCII arrows to Unicode
     def _norm_arrows(t):
         for a, u in [("->", "→"), ("<-", "←"), ("=>", "⇒"), ("<=", "⇐")]:
             t = t.replace(a, u)
         return t
-    arrow_citation = _norm_arrows(norm_citation)
-    arrow_page = _norm_arrows(norm_page)
+    arrow_citation = _norm_arrows(folded_citation)
+    arrow_page = _norm_arrows(folded_page)
     if arrow_citation in arrow_page:
         return {"found": True, "method": "arrow_normalized"}
 
-    # Check 6: strip all common citation-inconsequential characters and spaces
+    # Check 7: strip all common citation-inconsequential characters and spaces
     def _strip_artifacts(t):
-        return re.sub(r"[/\\–—.,;:!?'\"()\[\]{}<>→←⇒⇐\s]", "", t)
+        return re.sub(r"[/\\–—.,;:!?'\"‘’“”()\[\]{}<>→←⇒⇐\s]", "", t)
     artifact_citation = _strip_artifacts(arrow_citation.lower())
     artifact_page = _strip_artifacts(arrow_page.lower())
     if artifact_citation in artifact_page:

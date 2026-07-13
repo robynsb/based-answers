@@ -15,7 +15,13 @@ Python dependencies (PyMuPDF, PyYAML, Jinja2) come from the Nix flake — script
 nix develop "path:/Users/robin/.config/opencode/skills/citation-grounded-qa" -c python3 /Users/robin/.config/opencode/skills/citation-grounded-qa/run-pipeline.py "In RP2040 is there a PIO instruction that can detect if a pull will be blocking? or if a pull has blocked?"
 ```
 
-There are no tests or linters.
+Tests (stdlib unittest, in `tests/`; `tests/support.py` loads the dash-named scripts as modules):
+
+```sh
+nix develop "path:." -c python3 -m unittest discover -s tests -t .
+```
+
+There are no linters.
 
 All scripts are **working-directory-relative**: they read/write `answers/`, `indexed-pdfs/` (extracted-text cache, keyed by PDF basename), and `answer-pages/` in the CWD. Run the pipeline from the directory where the question's artifacts should live.
 
