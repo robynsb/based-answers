@@ -334,6 +334,29 @@ def _agent_instructions() -> str:
     return parts[2].strip() if len(parts) > 2 else text
 
 
+def group_feedback_by_round(rounds: list[dict]) -> list[tuple[int, list[str]]]:
+    """Group failure entries by the round they occurred in — a round can fail
+    several checks (e.g. one semantic failure per claim), and each is its own
+    entry in `rounds`."""
+    grouped: list[tuple[int, list[str]]] = []
+    for r in rounds:
+        if grouped and grouped[-1][0] == r["round"]:
+            grouped[-1][1].append(r["feedback"])
+        else:
+            grouped.append((r["round"], [r["feedback"]]))
+    return grouped
+
+
+def build_feedback_message(round_num: int, rounds: list[dict]) -> str:
+    msg_lines = [f"Round {round_num}/{MAX_ROUNDS} — the following checks failed. "
+                 "Fix the issues and run verify_citations again."]
+    for rnd, feedbacks in group_feedback_by_round(rounds):
+        plural = "s" if len(feedbacks) != 1 else ""
+        msg_lines.append(f"\n--- Round {rnd} feedback ({len(feedbacks)} failure{plural}) ---")
+        msg_lines.extend(feedbacks)
+    return "\n".join(msg_lines)
+
+
 def write_context(slug: str, question: str, pdf_info: list[dict], rounds: list[dict]) -> Path:
     path = Path("answers") / f"{slug}-context.md"
     lines = [
@@ -367,8 +390,10 @@ def write_context(slug: str, question: str, pdf_info: list[dict], rounds: list[d
     if not rounds:
         lines.append("None yet. This is your first attempt.")
     else:
-        for i, r in enumerate(rounds, 1):
-            lines += ["", f"### Round {i}", "```", r["feedback"], "```"]
+        for rnd, feedbacks in group_feedback_by_round(rounds):
+            lines += ["", f"### Round {rnd}"]
+            for fb in feedbacks:
+                lines += ["```", fb, "```"]
 
     path.write_text("\n".join(lines) + "\n")
     return path
@@ -528,10 +553,7 @@ def search_loop(slug: str, question: str, pdf_info: list[dict], rounds: list[dic
             if not session_id:
                 print(f"  {run_tag(run_id)}[WARN] Could not determine session ID; retries will be fresh sessions", flush=True)
         elif session_id:
-            msg_lines = [f"Round {round_num}/{MAX_ROUNDS} — the following checks failed. Fix the issues and run verify_citations again."]
-            for i, r in enumerate(rounds, 1):
-                msg_lines.append(f"\n--- Round {i} feedback ---\n{r['feedback']}")
-            message = "\n".join(msg_lines)
+            message = build_feedback_message(round_num, rounds)
             run_search_agent(None, question, session_id=session_id, message=message, run_id=run_id)
         else:
             # Fallback: fresh context + fresh session (session discovery failed)
@@ -541,7 +563,7 @@ def search_loop(slug: str, question: str, pdf_info: list[dict], rounds: list[dic
         yaml_path = find_yaml(slug)
         if not yaml_path:
             feedback = "No YAML file produced. Search PDFs and write answers/<slug>.yml."
-            rounds.append({"feedback": feedback})
+            rounds.append({"round": round_num, "feedback": feedback})
             emit(run_id, "feedback", {"round": round_num, "text": feedback})
             print(f"  {run_tag(run_id)}[FAIL] No YAML file found\n")
             continue
@@ -558,7 +580,7 @@ def search_loop(slug: str, question: str, pdf_info: list[dict], rounds: list[dic
         if not det["passed"]:
             print(f"  {run_tag(run_id)}[FAIL] Deterministic verification failed\n")
             feedback = f"Deterministic verification FAILED for {yaml_path.name}:\n" + det["output"]
-            rounds.append({"feedback": feedback})
+            rounds.append({"round": round_num, "feedback": feedback})
             emit(run_id, "feedback", {"round": round_num, "text": feedback})
             continue
 
@@ -570,7 +592,7 @@ def search_loop(slug: str, question: str, pdf_info: list[dict], rounds: list[dic
         if semantic_failures:
             for sf in semantic_failures:
                 feedback = f"Semantic checker FAILED for claim: {sf['claim']}\nChecker output:\n{sf['output']}"
-                rounds.append({"feedback": feedback})
+                rounds.append({"round": round_num, "feedback": feedback})
                 emit(run_id, "feedback", {"round": round_num, "text": feedback})
             print(f"  {run_tag(run_id)}Restarting with {len(semantic_failures)} semantic failure(s)...\n")
             continue
@@ -582,7 +604,7 @@ def search_loop(slug: str, question: str, pdf_info: list[dict], rounds: list[dic
              {"check": "coherence", "passed": coherence["passed"], "output": coherence["output"][:2000]})
         if not coherence["passed"]:
             feedback = f"Coherence checker FAILED:\n{coherence['output']}"
-            rounds.append({"feedback": feedback})
+            rounds.append({"round": round_num, "feedback": feedback})
             emit(run_id, "feedback", {"round": round_num, "text": feedback})
             print(f"  {run_tag(run_id)}Restarting with coherence failure...\n")
             continue
