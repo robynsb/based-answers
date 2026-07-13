@@ -77,6 +77,7 @@ answers: []
 Rules for the YAML:
 - `text` must be a verbatim quote from the source (exact characters)
 - `page` is the page number where the text appears
+- A quote may run across a page break: keep it as ONE citation and set `page` to the page where the quote starts. At least ~20 characters of the quote must be on the stated page; the rest may continue on the next page. Do not split the quote into fragments per page.
 - `source` is the PDF filename
 - Each claim can have multiple citations
 - `concatenation` is the exact concatenation of all claims joined with `". "` (period space). The deterministic verifier checks this.

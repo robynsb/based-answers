@@ -188,6 +188,36 @@ def _fold_for_match(t: str) -> str:
     return re.sub(r"[-/\\–—.,;:!?'\"‘’‚‛“”„()\[\]{}<>→←⇒⇐\s]", "", t)
 
 
+# Minimum folded chars of a quote that must be on the page to highlight the
+# on-page part of a quote that continues on an adjacent page
+MIN_PARTIAL_QUOTE = 20
+
+
+def _longest_edge_match(quote: str, joined: str) -> tuple[int, int]:
+    """(position, length) of the longest prefix or suffix of the quote found
+    in joined, or (-1, 0). Presence of prefixes/suffixes is monotone in
+    length, so both edges binary-search."""
+    lo, hi = 0, len(quote)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if quote[:mid] in joined:
+            lo = mid
+        else:
+            hi = mid - 1
+    best_prefix = lo
+    lo, hi = 0, len(quote)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if quote[-mid:] in joined:
+            lo = mid
+        else:
+            hi = mid - 1
+    best_suffix = lo
+    if best_prefix >= best_suffix:
+        return joined.find(quote[:best_prefix]), best_prefix
+    return joined.find(quote[-best_suffix:]), best_suffix
+
+
 def _multispan_highlights(spans: list[dict], text: str) -> list[dict]:
     """Locate a quote that crosses span boundaries: match it against the
     concatenated span texts, folded so any quote the deterministic verifier
@@ -202,10 +232,15 @@ def _multispan_highlights(spans: list[dict], text: str) -> list[dict]:
         t = _fold_for_match(s["text"])
         pieces.append(t)
         owners.extend([i] * len(t))
-    pos = "".join(pieces).find(quote)
+    joined = "".join(pieces)
+    pos = joined.find(quote)
+    length = len(quote)
     if pos == -1:
-        return []
-    hit = sorted(set(owners[pos:pos + len(quote)]))
+        # quote continues on an adjacent page: highlight the on-page part
+        pos, length = _longest_edge_match(quote, joined)
+        if pos == -1 or length < MIN_PARTIAL_QUOTE:
+            return []
+    hit = sorted(set(owners[pos:pos + length]))
     lines: list[list[float]] = []
     for i in hit:
         x0, y0, x1, y1 = spans[i]["bbox"]

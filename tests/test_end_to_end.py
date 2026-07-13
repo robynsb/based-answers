@@ -84,6 +84,14 @@ class TestEndToEnd(unittest.TestCase):
         for ref in context["all_references"]:
             self.assertTrue(ref["highlights"], f"no highlights for ref [{ref['num']}]")
 
+    def test_cross_page_quote_highlights_stated_page_portion(self):
+        # the fixture quote runs off page 344 onto 345 ("manipulated PC.");
+        # the stated page's portion still gets highlight bboxes
+        context = format_answers.build_context(
+            self.work / "answers" / "cross-page-forced-instruction.yml")
+        self.assertTrue(context["all_references"])
+        self.assertTrue(context["all_references"][0]["highlights"])
+
     def test_build_context_pdf_url_override(self):
         context = format_answers.build_context(
             self.work / "answers" / "rp2040-pull-blocking-detection.yml",
