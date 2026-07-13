@@ -302,7 +302,6 @@ def build_context(yaml_path: Path, pdf_url_for=None) -> dict:
         raise ValueError("YAML 'answers' field must be a list")
 
     question = data.get("question", "").strip()
-    concatenation = data.get("concatenation", "").strip()
     answers = data["answers"]
     unable = not answers
 

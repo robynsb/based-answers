@@ -301,18 +301,20 @@ def run_coherence_checker(yaml_path: Path, question: str, run_id: str | None = N
         import yaml as pyyaml
         with open(yaml_path) as f:
             data = pyyaml.safe_load(f)
-        concatenation = (data or {}).get("concatenation", "")
+        claims = [a.get("claim", "") for a in (data or {}).get("answers", [])
+                  if a.get("claim", "")]
     except Exception:
-        concatenation = ""
+        claims = []
 
-    if not concatenation:
-        return {"passed": True, "output": "No concatenation to check"}
+    if not claims:
+        return {"passed": True, "output": "No answer to check"}
 
+    answer_text = ". ".join(claims)
     rubric = f"""You are a coherence and completeness verifier.
 
 QUESTION: {question}
 
-CONCATENATION: {concatenation}
+ANSWER: {answer_text}
 
 Evaluate:
 1. COHERENCE: sensible paragraph with established concepts?
@@ -634,7 +636,7 @@ def run_worker(run_id: str, question: str):
         print(f"\n{run_tag(run_id)}[EXHAUSTED] All {MAX_ROUNDS} rounds failed.")
         yaml_path = find_yaml(slug) or Path("answers") / f"{slug}.yml"
         if not yaml_path.exists():
-            yaml_path.write_text(f"question: \"{question}\"\nconcatenation: \"\"\nanswers: []\n")
+            yaml_path.write_text(f"question: \"{question}\"\nanswers: []\n")
             print(f"{run_tag(run_id)}Wrote empty answer: {yaml_path}")
         else:
             print(f"{run_tag(run_id)}Using last answer: {yaml_path}")

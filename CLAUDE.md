@@ -36,8 +36,8 @@ Per run (run-id = question slug, `-N` suffixed on re-asks):
 1. **Setup (once at server startup, not per run)** — copies `citation-searcher.md` and `coherence-checker.md` into `~/.config/opencode/agents/`, and generates three TypeScript tool wrappers into `~/.config/opencode/tools/` (`pdf-search.ts`, `verify-citations.ts`, `write-answer.ts`) that shell out to the Python scripts via `nix develop`. These are **installed on every server start** (searcher always overwritten; checker only if missing), so agent/tool edits belong in this repo, not in `~/.config/opencode/`.
 2. **Search loop** (max `MAX_ROUNDS` = 5 rounds) — round 1 writes `answers/<slug>-context.md` (question, PDF index info, existing answer files, the agent instructions from `citation-searcher.md`, prior feedback) and starts a fresh `opencode run --agent citation-searcher` session titled `citation-qa-<run-id>`. The session ID is discovered by diffing `opencode session list` before/after — the unique title is matched first, and the "any new session" fallback is only trusted when exactly one unclaimed new id exists (`_claimed_sessions`), so parallel runs don't steal each other's sessions. Subsequent rounds send accumulated failure feedback to the **same session** via `--session`.
 3. **Three checkers per round**, each failure appended to `rounds` feedback and triggering a retry:
-   - **Deterministic** (`verify-citations.py`): every citation `text` must appear on the stated page of the cached extraction, tried through a ladder of increasingly lenient matches (exact → whitespace-normalized → case-insensitive → hyphen-stripped → arrow-normalized → punctuation-stripped); a quote spanning a page break passes when ≥20 chars of it match the stated page and the remainder matches the adjacent page (headers/footers sit between the halves, so joined page text can't match); also verifies `concatenation` equals all claims joined with `". "`. On failure it reports closest-match suggestions, a found-on-page-X hint when the quote lives on a different page, and first-diff position.
-   - **Semantic** (per claim, with all preceding claims passed as trusted premises) and **coherence** (whole concatenation): rubric prompts sent to the tool-less `coherence-checker` opencode agent; pass requires "PASS" and no "FAIL" in the output. The rubrics live inline in `based-answers.py`.
+   - **Deterministic** (`verify-citations.py`): every citation `text` must appear on the stated page of the cached extraction, tried through a ladder of increasingly lenient matches (exact → whitespace-normalized → case-insensitive → hyphen-stripped → arrow-normalized → punctuation-stripped); a quote spanning a page break passes when ≥20 chars of it match the stated page and the remainder matches the adjacent page (headers/footers sit between the halves, so joined page text can't match). On failure it reports closest-match suggestions and a found-on-page-X hint when the quote lives on a different page.
+   - **Semantic** (per claim, with all preceding claims passed as trusted premises) and **coherence** (all claims joined into one paragraph): rubric prompts sent to the tool-less `coherence-checker` opencode agent; pass requires "PASS" and no "FAIL" in the output. The rubrics live inline in `based-answers.py`.
 4. **Live view** — as soon as a round produces a YAML, the answer fragment is rendered (`format_answers.build_context` + `answer-body.html`) and pushed to the browser, so the draft is visible while checkers run; the final state is `passed`, `exhausted` (last/empty answer shown), or `error`.
 
 ### Persistence & event stream
@@ -56,7 +56,6 @@ Defined in `citation-searcher.md` and enforced by `verify-citations.py`:
 
 ```yaml
 question: "..."
-concatenation: "<all claims joined with '. '>"   # checked character-exactly
 answers:
   - claim: "..."
     citations:
@@ -65,7 +64,7 @@ answers:
         source: "file.pdf"
 ```
 
-Empty `concatenation` + empty `answers` is the valid "unable to answer" output (and skips the semantic/coherence checks).
+An empty `answers` list is the valid "unable to answer" output (and skips the semantic/coherence checks). Older answer files may still carry a `concatenation` field (once required to equal the claims joined with `". "`); nothing reads it anymore.
 
 ### Key couplings to keep in sync
 

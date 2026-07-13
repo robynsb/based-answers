@@ -1,5 +1,4 @@
 question: "does pio_sm_restart restart the program counter?"
-concatenation: "pio_sm_restart does not restart the program counter; the program counter is explicitly listed as not affected"
 answers:
   - claim: "pio_sm_restart does not restart the program counter; the program counter is explicitly listed as not affected"
     citations:

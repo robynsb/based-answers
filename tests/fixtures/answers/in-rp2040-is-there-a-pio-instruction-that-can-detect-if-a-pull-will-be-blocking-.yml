@@ -1,5 +1,4 @@
 question: "In RP2040 is there a PIO instruction that can detect if a pull will be blocking? or if a pull has blocked?"
-concatenation: "The PIO has only nine instructions, and the PULL instruction has a Block bit that determines whether a PULL from an empty TX FIFO stalls or copies X to OSR. A nonblocking PULL on an empty TX FIFO does not stall and instead copies scratch X to OSR, providing a way for a PIO program to handle the empty FIFO case without needing to detect whether the pull will block. A blocking PULL stalls when the TX FIFO is empty; after the fact, the stall can be detected from the system side by reading the PIO FDEBUG register's TXSTALL bit, but there is no PIO instruction that detects past stalls from within the PIO program itself"
 answers:
   - claim: "The PIO has only nine instructions, and the PULL instruction has a Block bit that determines whether a PULL from an empty TX FIFO stalls or copies X to OSR"
     citations:

@@ -1,5 +1,4 @@
 question: "In RP2040 PIO, what does the program counter do when the host forces an instruction to be executed?"
-concatenation: "When an instruction is written to the INSTR register, the program counter does not advance, and the state machine executes the forced instruction instead of the one it would have fetched"
 answers:
   - claim: "When an instruction is written to the INSTR register, the program counter does not advance, and the state machine executes the forced instruction instead of the one it would have fetched"
     citations:

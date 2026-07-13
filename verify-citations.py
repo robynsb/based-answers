@@ -10,7 +10,6 @@ Usage:
 
 YAML input format:
   question: "..."
-  concatenation: "all claims joined with '. '"
   answers:
     - claim: "..."
       citations:
@@ -296,70 +295,6 @@ def check_citation(citation_text: str, page: int, cache: dict) -> dict:
     return {"found": False, "reason": reason, "suggestions": suggestions}
 
 
-def _find_first_diff(expected: str, actual: str) -> dict:
-    """Return detailed debug info about the first difference between two strings."""
-    result = {
-        "expected_length": len(expected),
-        "actual_length": len(actual),
-    }
-    for i in range(min(len(expected), len(actual))):
-        if expected[i] != actual[i]:
-            result["index"] = i
-            result["expected_char"] = expected[i]
-            result["expected_ord"] = ord(expected[i])
-            result["actual_char"] = actual[i]
-            result["actual_ord"] = ord(actual[i])
-            return result
-    if len(expected) != len(actual):
-        result["index"] = min(len(expected), len(actual))
-        result["expected_char"] = expected[result["index"]] if result["index"] < len(expected) else ""
-        result["actual_char"] = actual[result["index"]] if result["index"] < len(actual) else ""
-        result["expected_ord"] = ord(result["expected_char"]) if result["expected_char"] else None
-        result["actual_ord"] = ord(result["actual_char"]) if result["actual_char"] else None
-        return result
-    return {}
-
-
-def check_concatenation(data: dict) -> dict:
-    claims = [a.get("claim", "") for a in data.get("answers", [])]
-    expected = ". ".join(claims)
-    actual = data.get("concatenation", "")
-    if actual == expected:
-        return {"found": True}
-    result = {"found": False, "expected": expected, "actual": actual}
-    diff = _find_first_diff(expected, actual)
-    result.update(diff)
-    index = diff.get("index")
-    if index is not None and "expected_char" in diff and "actual_char" in diff:
-        ec, ac = diff["expected_char"], diff["actual_char"]
-        eo = diff.get("expected_ord")
-        ao = diff.get("actual_ord")
-        ec_repr = repr(ec) if ec else "end-of-string"
-        ac_repr = repr(ac) if ac else "end-of-string"
-        eo_str = f" (U+{eo:04X})" if eo is not None else ""
-        ao_str = f" (U+{ao:04X})" if ao is not None else ""
-        if ec == "":
-            result["reason"] = (
-                f"Length mismatch (expected={len(expected)}, actual={len(actual)}). "
-                f"Extra trailing content starts at index {index}: {repr(actual[index:index+50])}"
-            )
-        elif ac == "":
-            result["reason"] = (
-                f"Length mismatch (expected={len(expected)}, actual={len(actual)}). "
-                f"Missing trailing content from index {index}: {repr(expected[index:index+50])}"
-            )
-        else:
-            result["reason"] = (
-                f"First diff at index {index}: "
-                f"expected {ec_repr}{eo_str}, got {ac_repr}{ao_str}"
-            )
-    else:
-        result["reason"] = (
-            f"Length mismatch (expected={len(expected)}, actual={len(actual)})"
-        )
-    return result
-
-
 def main():
     parser = argparse.ArgumentParser(
         description="Deterministic citation verifier"
@@ -431,45 +366,6 @@ def main():
                     "status": status,
                     "reason": reason if status == "FAIL" else None,
                 })
-
-    # Check concatenation
-    total += 1
-    concat_result = check_concatenation(data)
-    if concat_result["found"]:
-        concat_status = "PASS"
-        passed += 1
-    else:
-        concat_status = "FAIL"
-        reason = concat_result.get("reason", "")
-        failed += 1
-
-    if args.format == "table":
-        concat_extra = f" ({reason})" if concat_status == "FAIL" else ""
-        print(f"{'CONCATENATION':<60} {'':<50} {'':<6} {concat_status:<10}{concat_extra}")
-        if concat_status == "FAIL" and args.verbose:
-            exp = concat_result.get("expected", "")
-            act = concat_result.get("actual", "")
-            first_diff = concat_result.get("index")
-            if first_diff is not None:
-                ctx_start = max(0, first_diff - 40)
-                ctx_end = min(len(exp), first_diff + 40)
-                if ctx_start > 0:
-                    print(f"{'':>60} {'':>50} {'':>6} expected: ...{repr(exp[ctx_start:ctx_end])}...")
-                    print(f"{'':>60} {'':>50} {'':>6} actual:   ...{repr(act[ctx_start:ctx_end])}...")
-                    marker = " " * (8 + len(repr(exp[ctx_start:first_diff]))) + "^"
-                    print(f"{'':>60} {'':>50} {'':>6} {'':>8}{marker}")
-                else:
-                    print(f"{'':>60} {'':>50} {'':>6} expected: {repr(exp[:80])}")
-                    print(f"{'':>60} {'':>50} {'':>6} actual:   {repr(act[:80])}")
-    elif args.format == "json":
-        results.append({
-            "claim": "CONCATENATION",
-            "citation": "",
-            "page": 0,
-            "source": "",
-            "status": concat_status,
-            "reason": reason if concat_status == "FAIL" else None,
-        })
 
     if args.format == "table":
         print(f"\n{'=' * 130}")

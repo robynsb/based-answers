@@ -32,8 +32,8 @@ class TestEndToEnd(unittest.TestCase):
 
         shutil.copy2(FIXTURES / PDF_NAME, cls.work / PDF_NAME)
         shutil.copytree(FIXTURES / "answers", cls.work / "answers")
-        # a draft-round YAML (fails the concatenation check, but renders):
-        # its short quotes fit single PDF spans, so it exercises highlights
+        # a mid-run draft YAML: its short quotes fit single PDF spans,
+        # so it exercises highlights
         cls.draft_yaml = cls.work / "draft-what-is-the-frequency-of-rp2040.yml"
         shutil.copy2(FIXTURES / "draft-what-is-the-frequency-of-rp2040.yml", cls.draft_yaml)
         # Build the indexed-pdfs cache the same way the pipeline does

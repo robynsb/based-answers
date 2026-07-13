@@ -53,7 +53,6 @@ The YAML structure is:
 
 ```yaml
 question: "What is the maximum clock speed of the RP2350?"
-concatenation: "The dual Cortex-M33 or Hazard3 processors run at 150 MHz. The maximum system frequency is 150 MHz."
 answers:
   - claim: "The dual Cortex-M33 or Hazard3 processors run at 150 MHz"
     citations:
@@ -70,7 +69,6 @@ answers:
 If no answer is possible:
 ```yaml
 question: "..."
-concatenation: ""
 answers: []
 ```
 
@@ -80,8 +78,7 @@ Rules for the YAML:
 - A quote may run across a page break: keep it as ONE citation and set `page` to the page where the quote starts. At least ~20 characters of the quote must be on the stated page; the rest may continue on the next page. Do not split the quote into fragments per page.
 - `source` is the PDF filename
 - Each claim can have multiple citations
-- `concatenation` is the exact concatenation of all claims joined with `". "` (period space). The deterministic verifier checks this.
-- If no evidence exists, output `concatenation: ""` and an empty answers list
+- If no evidence exists, output an empty answers list
 
 ### Rule 3: Direct Logical Inference Only
 You may infer direct consequences of source statements:

@@ -1,5 +1,4 @@
 question: "In RP2040, can one PIO machine stall untill another tells it to start?"
-concatenation: "One PIO state machine can synchronise with another by using IRQ flags — one state machine can set a flag using the IRQ instruction, and another can wait for that flag using the WAIT IRQ instruction, which stalls the state machine until the flag is set. The WAIT instruction is a stalling instruction whose operation is to stall until some condition is met; with WAIT 1 IRQ, the selected IRQ flag is cleared by the state machine upon the wait condition being met. The IRQ instruction sets or clears an IRQ flag, and when the MSB of the index argument is set, modulo-4 addition on the two LSBs allows relative addressing so multiple state machines running the same program can synchronise with each other"
 answers:
   - claim: "One PIO state machine can synchronise with another by using IRQ flags — one state machine can set a flag using the IRQ instruction, and another can wait for that flag using the WAIT IRQ instruction, which stalls the state machine until the flag is set"
     citations:
