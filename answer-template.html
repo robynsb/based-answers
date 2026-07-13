@@ -67,8 +67,11 @@
   }
   .ref-card .meta { font-size: 0.85rem; color: var(--muted); }
   .ref-card .meta a { color: var(--accent); }
+  .pdf-preview-details { margin-top: 0.75rem; }
+  .pdf-preview-details > summary { cursor: pointer; font-size: 0.85rem; color: var(--muted); }
+  .pdf-preview-details > summary:hover { color: var(--accent); }
   .pdf-preview-wrap {
-    margin-top: 0.75rem;
+    margin-top: 0.4rem;
     position: relative;
     display: block;
     width: 100%;
@@ -126,17 +129,31 @@ async function renderPreview(wrap) {
     const page = await pdf.getPage(pageNum);
     const viewport = page.getViewport({ scale: SCALE });
 
+    // Show only a one-third-page-height band, centered on the highlights
+    const bandH = viewport.height / 3;
+    let center = bandH / 2;
+    if (highlights.length) {
+      let minY = Infinity, maxY = -Infinity;
+      for (const h of highlights) {
+        minY = Math.min(minY, h.bbox[1]);
+        maxY = Math.max(maxY, h.bbox[3]);
+      }
+      center = ((minY + maxY) / 2) * SCALE;
+    }
+    const cropTop = Math.min(Math.max(center - bandH / 2, 0), viewport.height - bandH);
+
     canvas.width = viewport.width;
-    canvas.height = viewport.height;
+    canvas.height = bandH;
     const ctx = canvas.getContext("2d");
 
-    await page.render({ canvasContext: ctx, viewport: viewport }).promise;
+    await page.render({ canvasContext: ctx, viewport: viewport,
+                        transform: [1, 0, 0, 1, 0, -cropTop] }).promise;
 
     // Draw highlight overlays
     for (const h of highlights) {
       const [x0, y0, x1, y1] = h.bbox;
       const sx = x0 * SCALE;
-      const sy = y0 * SCALE;
+      const sy = y0 * SCALE - cropTop;
       const sw = (x1 - x0) * SCALE;
       const sh = (y1 - y0) * SCALE;
       ctx.fillStyle = "rgba(255, 213, 0, 0.35)";

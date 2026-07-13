@@ -77,6 +77,13 @@ class TestEndToEnd(unittest.TestCase):
         # quotes short enough to sit inside one PDF text span get bboxes
         self.assertTrue(any(ref["highlights"] for ref in context["all_references"]))
 
+    def test_multiline_quotes_get_highlights(self):
+        # quotes crossing span/line boundaries get one bbox per line
+        context = format_answers.build_context(self.work / "answers" / "pio_sm_restart-pc.yml")
+        self.assertTrue(context["all_references"])
+        for ref in context["all_references"]:
+            self.assertTrue(ref["highlights"], f"no highlights for ref [{ref['num']}]")
+
     def test_build_context_pdf_url_override(self):
         context = format_answers.build_context(
             self.work / "answers" / "rp2040-pull-blocking-detection.yml",

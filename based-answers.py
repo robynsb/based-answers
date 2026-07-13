@@ -503,7 +503,8 @@ export default tool({{
 
 
 def search_loop(slug: str, question: str, pdf_info: list[dict], rounds: list[dict],
-                pdf_dir: str, run_id: str | None = None) -> Path | None:
+                pdf_dir: str, run_id: str | None = None) -> tuple[Path | None, int]:
+    """Returns (yaml_path, round_num) on success, (None, MAX_ROUNDS) when exhausted."""
     session_id = None
     before_ids = get_session_ids()
 
@@ -590,9 +591,9 @@ def search_loop(slug: str, question: str, pdf_info: list[dict], rounds: list[dic
         print(f"\n{'=' * 60}")
         print(f"{run_tag(run_id)}ALL CHECKS PASSED - round {round_num}")
         print(f"{'=' * 60}\n")
-        return yaml_path
+        return yaml_path, round_num
 
-    return None
+    return None, MAX_ROUNDS
 
 
 def run_worker(run_id: str, question: str):
@@ -600,11 +601,11 @@ def run_worker(run_id: str, question: str):
     slug = derive_slug(question)
     try:
         rounds: list[dict] = []
-        yaml_path = search_loop(slug, question, PDF_INFO, rounds, PDF_DIR, run_id=run_id)
+        yaml_path, passed_round = search_loop(slug, question, PDF_INFO, rounds, PDF_DIR, run_id=run_id)
 
         if yaml_path is not None:
             emit_answer(run_id, yaml_path)
-            emit(run_id, "phase", {"phase": "passed", "round": len(rounds) + 1})
+            emit(run_id, "phase", {"phase": "passed", "round": passed_round})
             SERVER.set_status(run_id, "passed", str(yaml_path))
             return
 

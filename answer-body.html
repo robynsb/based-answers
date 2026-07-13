@@ -19,11 +19,14 @@
         </span>
       </div>
       <blockquote>&ldquo;{{ ref.text }}&rdquo;</blockquote>
-      <div class="pdf-preview-wrap" data-pdf="{{ ref.pdf_url }}" data-page="{{ ref.page }}"
-           data-highlights='{{ ref.highlights_json | safe }}'
-           data-page-w="{{ ref.page_width }}" data-page-h="{{ ref.page_height }}">
-        <canvas></canvas>
-      </div>
+      <details class="pdf-preview-details">
+        <summary>page preview</summary>
+        <div class="pdf-preview-wrap" data-pdf="{{ ref.pdf_url }}" data-page="{{ ref.page }}"
+             data-highlights='{{ ref.highlights_json | safe }}'
+             data-page-w="{{ ref.page_width }}" data-page-h="{{ ref.page_height }}">
+          <canvas></canvas>
+        </div>
+      </details>
     </div>
     {% endfor %}
   </section>

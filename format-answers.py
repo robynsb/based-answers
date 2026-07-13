@@ -176,6 +176,35 @@ def merge_citations(flat: list[dict], paras: list[frozenset[int]]) -> tuple[list
     return root_of, {r: texts[r] for r in set(root_of)}
 
 
+def _multispan_highlights(spans: list[dict], text: str) -> list[dict]:
+    """Locate a quote that crosses span boundaries: match it against the
+    concatenated span texts with all whitespace removed (spans split words
+    mid-line and lines mid-sentence), then merge hit spans into one bbox
+    per text line."""
+    quote = "".join(text.split()).lower()
+    if not quote:
+        return []
+    owners: list[int] = []
+    pieces: list[str] = []
+    for i, s in enumerate(spans):
+        t = "".join(s["text"].split()).lower()
+        pieces.append(t)
+        owners.extend([i] * len(t))
+    pos = "".join(pieces).find(quote)
+    if pos == -1:
+        return []
+    hit = sorted(set(owners[pos:pos + len(quote)]))
+    lines: list[list[float]] = []
+    for i in hit:
+        x0, y0, x1, y1 = spans[i]["bbox"]
+        if lines and abs(lines[-1][1] - y0) < 2 and abs(lines[-1][3] - y1) < 2:
+            last = lines[-1]
+            lines[-1] = [min(last[0], x0), min(last[1], y0), max(last[2], x1), max(last[3], y1)]
+        else:
+            lines.append([x0, y0, x1, y1])
+    return [{"bbox": b} for b in lines]
+
+
 def get_highlights_for_text(pages_data: dict, page: int, text: str, max_results: int = 5) -> tuple[list[dict], float, float]:
     page_key = str(page)
     page_info = pages_data.get(page_key, {})
@@ -206,6 +235,9 @@ def get_highlights_for_text(pages_data: dict, page: int, text: str, max_results:
                 if key not in seen_bboxes:
                     seen_bboxes.add(key)
                     matching.append({"bbox": s["bbox"]})
+    if not matching:
+        # quote crosses span boundaries; one bbox per line, so no cap
+        return _multispan_highlights(spans, text), page_w, page_h
     return matching[:max_results], page_w, page_h
 
 
