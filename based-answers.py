@@ -238,6 +238,9 @@ def run_checker(prompt_text: str, color: str = "", timeout: int = 120,
 
 
 def run_semantic_checkers(yaml_path: Path, run_id: str | None = None) -> list[dict]:
+    """Check claims in order; stops at the first failing claim so the round
+    goes straight back to the search agent (later claims stay unchecked —
+    they may shift anyway once the failing one is fixed)."""
     try:
         import yaml as pyyaml
         with open(yaml_path) as f:
@@ -292,6 +295,7 @@ Rules: direct logical inference OK. Cross-source inference OK. PREVIOUS_CLAIMS m
              {"index": i, "claim": claim, "status": "pass" if passed else "fail"})
         if not passed:
             failures.append({"claim": claim, "output": result[:2000]})
+            return failures
 
     return failures
 
@@ -592,11 +596,13 @@ def search_loop(slug: str, question: str, pdf_info: list[dict], rounds: list[dic
         emit(run_id, "phase", {"phase": "semantic", "round": round_num})
         semantic_failures = run_semantic_checkers(yaml_path, run_id=run_id)
         if semantic_failures:
-            for sf in semantic_failures:
-                feedback = f"Semantic checker FAILED for claim: {sf['claim']}\nChecker output:\n{sf['output']}"
-                rounds.append({"round": round_num, "feedback": feedback})
-                emit(run_id, "feedback", {"round": round_num, "text": feedback})
-            print(f"  {run_tag(run_id)}Restarting with {len(semantic_failures)} semantic failure(s)...\n")
+            sf = semantic_failures[0]
+            feedback = (f"Semantic checker FAILED for claim: {sf['claim']}\n"
+                        f"(checking stopped at the first failing claim; later claims were not checked)\n"
+                        f"Checker output:\n{sf['output']}")
+            rounds.append({"round": round_num, "feedback": feedback})
+            emit(run_id, "feedback", {"round": round_num, "text": feedback})
+            print(f"  {run_tag(run_id)}Restarting with semantic failure on claim: {sf['claim'][:80]}...\n")
             continue
 
         # ── Coherence checker ──
