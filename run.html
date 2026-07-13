@@ -578,7 +578,18 @@ async function renderPreview(wrap) {
 }
 
 window.renderAllPreviews = () =>
-  document.querySelectorAll(".pdf-preview-wrap").forEach(renderPreview);
+  document.querySelectorAll(".pdf-preview-wrap").forEach((wrap) => {
+    // answer fragments persisted before previews became collapsible
+    // replay without the <details>; wrap them here so old runs match
+    if (!wrap.closest("details.pdf-preview-details")) {
+      const det = document.createElement("details");
+      det.className = "pdf-preview-details";
+      det.innerHTML = "<summary>page preview</summary>";
+      wrap.replaceWith(det);
+      det.appendChild(wrap);
+    }
+    renderPreview(wrap);
+  });
 window.renderAllPreviews();
 </script>
 </body>

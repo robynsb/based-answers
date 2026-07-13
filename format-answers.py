@@ -10,6 +10,7 @@ Output: answers/<slug>.html (printed absolute path to stdout)
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -176,18 +177,29 @@ def merge_citations(flat: list[dict], paras: list[frozenset[int]]) -> tuple[list
     return root_of, {r: texts[r] for r in set(root_of)}
 
 
+def _fold_for_match(t: str) -> str:
+    """Collapse a text to the characters that survive every leniency rung of
+    verify-citations.py: lowercase, expand ligatures, drop punctuation,
+    hyphens/dashes, arrows, and all whitespace."""
+    t = t.lower()
+    for a, b in [("ﬀ", "ff"), ("ﬁ", "fi"), ("ﬂ", "fl"), ("ﬃ", "ffi"), ("ﬄ", "ffl"),
+                 ("−", "-")]:
+        t = t.replace(a, b)
+    return re.sub(r"[-/\\–—.,;:!?'\"‘’‚‛“”„()\[\]{}<>→←⇒⇐\s]", "", t)
+
+
 def _multispan_highlights(spans: list[dict], text: str) -> list[dict]:
     """Locate a quote that crosses span boundaries: match it against the
-    concatenated span texts with all whitespace removed (spans split words
-    mid-line and lines mid-sentence), then merge hit spans into one bbox
-    per text line."""
-    quote = "".join(text.split()).lower()
+    concatenated span texts, folded so any quote the deterministic verifier
+    accepts is found (spans split words mid-line and lines mid-sentence),
+    then merge hit spans into one bbox per text line."""
+    quote = _fold_for_match(text)
     if not quote:
         return []
     owners: list[int] = []
     pieces: list[str] = []
     for i, s in enumerate(spans):
-        t = "".join(s["text"].split()).lower()
+        t = _fold_for_match(s["text"])
         pieces.append(t)
         owners.extend([i] * len(t))
     pos = "".join(pieces).find(quote)
