@@ -70,12 +70,14 @@
   .pdf-preview-wrap {
     margin-top: 0.75rem;
     position: relative;
-    display: inline-block;
+    display: block;
+    width: 100%;
   }
   .pdf-preview-wrap canvas {
     border: 1px solid var(--border);
     border-radius: 4px;
-    max-width: 100%;
+    width: 100%;
+    height: auto;
   }
   .unable {
     text-align: center;
@@ -108,7 +110,7 @@
 import * as pdfjsLib from "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.0.379/pdf.min.mjs";
 pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.0.379/pdf.worker.min.mjs";
 
-const SCALE = 0.5;
+const SCALE = 1.5;
 
 async function renderPreview(wrap) {
   const pdfPath = wrap.dataset.pdf;

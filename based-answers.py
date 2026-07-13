@@ -80,8 +80,11 @@ def emit(run_id: str | None, event: str, data: dict):
         print(f"  [emit error] {e}", file=sys.stderr)
 
 
-def emit_line(run_id: str | None, agent: str, line: str):
-    emit(run_id, "agent-line", {"agent": agent, "line": ANSI_RE.sub("", line.rstrip("\n"))})
+def emit_line(run_id: str | None, agent: str, line: str, extra: dict | None = None):
+    data = {"agent": agent, "line": ANSI_RE.sub("", line.rstrip("\n"))}
+    if extra:
+        data.update(extra)
+    emit(run_id, "agent-line", data)
 
 
 def emit_answer(run_id: str | None, yaml_path: Path):
@@ -158,6 +161,8 @@ def run_search_agent(prompt_path: Path | None, question: str, session_id: str | 
         cmd.extend(["--session", session_id])
         if message:
             cmd.append(message)
+            emit_line(run_id, "searcher",
+                      f"── FEEDBACK SENT TO {AGENT_NAME} ──\n{message}\n{'─' * 40}\n")
     else:
         title_id = run_id or derive_slug(question)
         cmd.extend(["-f", str(prompt_path), "--title", f"citation-qa-{title_id}", question])
@@ -166,6 +171,8 @@ def run_search_agent(prompt_path: Path | None, question: str, session_id: str | 
         print(f"{'─' * 60}", flush=True)
         print(prompt_path.read_text(), flush=True)
         print(f"{'─' * 60}\n", flush=True)
+        emit_line(run_id, "searcher",
+                  f"── CONTEXT GIVEN TO {AGENT_NAME} ──\n{prompt_path.read_text()}\n{'─' * 40}\n")
 
     label = f"{AGENT_NAME}{' (continuing session)' if session_id else ''}"
     print(f"  {run_tag(run_id)}Agent: {label}", flush=True)
@@ -207,10 +214,14 @@ def run_deterministic(yaml_path: Path, pdf_dir: str = ".") -> dict:
 
 
 def run_checker(prompt_text: str, color: str = "", timeout: int = 120,
-                agent: str = "coherence", run_id: str | None = None) -> str:
+                agent: str = "coherence", run_id: str | None = None,
+                extra: dict | None = None) -> str:
     with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as f:
         f.write(prompt_text)
         tmp_path = f.name
+
+    emit_line(run_id, agent,
+              f"── PROMPT GIVEN TO {CHECKER_NAME} ──\n{prompt_text}\n{'─' * 40}\n", extra)
 
     cmd = ["opencode", "run", "--agent", CHECKER_NAME, "Evaluate the following.", "-f", tmp_path]
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
@@ -219,7 +230,7 @@ def run_checker(prompt_text: str, color: str = "", timeout: int = 120,
         if not line:
             break
         print(f"{color}{run_tag(run_id)}{line}{RESET if color else ''}", end="", flush=True)
-        emit_line(run_id, agent, line)
+        emit_line(run_id, agent, line, extra)
         lines.append(line)
     proc.wait(timeout=timeout)
     os.unlink(tmp_path)
@@ -273,7 +284,8 @@ Does the SYNTHESIS of all SOURCE_TEXTS together with PREVIOUS_CLAIMS strictly im
 
 Rules: direct logical inference OK. Cross-source inference OK. PREVIOUS_CLAIMS may be treated as established facts and combined with SOURCE_TEXTS. External domain knowledge = FAIL. Never use your own knowledge.
 """
-        result = run_checker(rubric, color=SEMANTIC_COLOR, agent="semantic", run_id=run_id)
+        result = run_checker(rubric, color=SEMANTIC_COLOR, agent="semantic", run_id=run_id,
+                             extra={"claim": i})
         passed = "PASS" in result.upper() and "FAIL" not in result.upper()
         print(f"  {run_tag(run_id)}{'[PASS]' if passed else '[FAIL]'} Claim {i+1}: {claim[:80]}")
         emit(run_id, "claim-status",
