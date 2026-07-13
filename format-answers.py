@@ -209,25 +209,18 @@ def get_highlights_for_text(pages_data: dict, page: int, text: str, max_results:
     return matching[:max_results], page_w, page_h
 
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="Generate HTML answer page with PDF previews"
-    )
-    parser.add_argument("yaml", help="YAML file with claims and citations")
-    args = parser.parse_args()
+def build_context(yaml_path: Path, pdf_url_for=None) -> dict:
+    """Build the template context for answer-body.html from a YAML answer file.
 
-    yaml_path = Path(args.yaml)
+    pdf_url_for(source_name, source_path) returns the URL the browser uses to
+    link to and fetch the PDF; defaults to a file:// URL of the absolute path.
+    """
+    yaml_path = Path(yaml_path)
     yaml_dir = yaml_path.parent
-    html_dir = Path("answer-pages")
-    html_dir.mkdir(parents=True, exist_ok=True)
-    if not yaml_path.exists():
-        print(f"Error: YAML file not found: {yaml_path}", file=sys.stderr)
-        sys.exit(1)
     data = load_yaml(str(yaml_path))
 
     if not isinstance(data.get("answers"), list):
-        print("Error: YAML 'answers' field must be a list", file=sys.stderr)
-        sys.exit(1)
+        raise ValueError("YAML 'answers' field must be a list")
 
     question = data.get("question", "").strip()
     concatenation = data.get("concatenation", "").strip()
@@ -280,6 +273,11 @@ def main():
             errors.append(msg)
             print(msg, file=sys.stderr)
 
+        if pdf_url_for is not None:
+            pdf_url = pdf_url_for(source_name, source_path)
+        else:
+            pdf_url = f"file://{source_path}"
+
         cache = caches.get(source_name)
 
         highlights = []
@@ -317,6 +315,7 @@ def main():
             "page": page,
             "source_name": source_name,
             "source_path": source_path,
+            "pdf_url": pdf_url,
             "highlights": highlights,
             "highlights_json": json.dumps(highlights),
             "page_width": page_w,
@@ -334,22 +333,46 @@ def main():
         links = []
         for n in nums:
             ref = all_refs[n - 1]
-            links.append(f'<a href="file://{ref["source_path"]}#page={ref["page"]}">{n}</a>')
+            links.append(f'<a href="{ref["pdf_url"]}#page={ref["page"]}">{n}</a>')
         sup = f"<sup>{','.join(links)}</sup>" if links else ""
         concat_parts.append(f"{claim}{sup}")
 
     cat_html = ". ".join(concat_parts)
 
+    return {
+        "question": question,
+        "concatenation": cat_html,
+        "all_references": all_refs,
+        "unable": unable,
+        "errors": errors if errors else None,
+    }
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Generate HTML answer page with PDF previews"
+    )
+    parser.add_argument("yaml", help="YAML file with claims and citations")
+    args = parser.parse_args()
+
+    yaml_path = Path(args.yaml)
+    html_dir = Path("answer-pages")
+    html_dir.mkdir(parents=True, exist_ok=True)
+    if not yaml_path.exists():
+        print(f"Error: YAML file not found: {yaml_path}", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        context = build_context(yaml_path)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    skill_dir = Path(__file__).parent.resolve()
     try:
         env = Environment(loader=FileSystemLoader(str(skill_dir)))
         template = env.get_template("answer-template.html")
-        html = template.render(
-            question=question,
-            concatenation=cat_html,
-            all_references=all_refs,
-            unable=unable,
-            errors=errors if errors else None,
-        )
+        html = template.render(**context)
     except TemplateNotFound:
         print("Error: Template 'answer-template.html' not found in skill directory", file=sys.stderr)
         sys.exit(1)

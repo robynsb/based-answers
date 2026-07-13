@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Based Answers</title>
+<style>
+  :root {
+    --bg: #fff;
+    --text: #1a1a2e;
+    --muted: #555;
+    --border: #ddd;
+    --accent: #2563eb;
+    --card-bg: #f8f9fa;
+    --card-border: #e9ecef;
+    --ok: #16a34a;
+    --bad: #dc2626;
+    --warn: #d97706;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    padding: 2rem 1rem;
+    max-width: 900px;
+    margin: 0 auto;
+  }
+  .brand {
+    font-size: 1.6rem;
+    font-weight: 700;
+    color: var(--text);
+    text-decoration: none;
+    display: inline-block;
+    margin-bottom: 1.5rem;
+  }
+  .brand span { color: var(--accent); }
+  .ask-form {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 2.5rem;
+  }
+  .ask-form input {
+    flex: 1;
+    font-size: 1.1rem;
+    padding: 0.7rem 1rem;
+    border: 2px solid var(--accent);
+    border-radius: 8px;
+    outline: none;
+  }
+  .ask-form button {
+    font-size: 1.1rem;
+    padding: 0.7rem 1.4rem;
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    font-weight: 600;
+  }
+  .ask-form button:hover { opacity: 0.9; }
+  h2 { font-size: 1.1rem; margin-bottom: 1rem; border-bottom: 1px solid var(--border); padding-bottom: 0.3rem; }
+  .run-card {
+    display: flex;
+    align-items: center;
+    gap: 0.8rem;
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: 8px;
+    padding: 0.8rem 1rem;
+    margin-bottom: 0.6rem;
+    text-decoration: none;
+    color: var(--text);
+  }
+  .run-card:hover { border-color: var(--accent); }
+  .run-card .q { flex: 1; }
+  .run-card .when { font-size: 0.8rem; color: var(--muted); white-space: nowrap; }
+  .badge {
+    font-size: 0.75rem;
+    font-weight: 700;
+    padding: 0.15rem 0.6rem;
+    border-radius: 999px;
+    white-space: nowrap;
+  }
+  .badge.running { color: var(--accent); border: 1px solid var(--accent); }
+  .badge.passed { color: var(--ok); border: 1px solid var(--ok); }
+  .badge.exhausted { color: var(--warn); border: 1px solid var(--warn); }
+  .badge.error { color: var(--bad); border: 1px solid var(--bad); }
+  .badge.legacy { color: var(--muted); border: 1px solid var(--border); }
+  .spinner {
+    display: inline-block;
+    width: 0.85em;
+    height: 0.85em;
+    border: 2px solid var(--accent);
+    border-top-color: transparent;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    vertical-align: -0.1em;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .empty { color: var(--muted); font-style: italic; padding: 1rem 0; }
+  section { margin-bottom: 2.5rem; }
+</style>
+</head>
+<body>
+<a class="brand" href="/">Based <span>Answers</span></a>
+
+<form class="ask-form" method="post" action="/ask">
+  <input name="question" placeholder="Ask a question about the sources…" autofocus required>
+  <button type="submit">Ask</button>
+</form>
+
+<section>
+  <h2>Questions</h2>
+  {% if not runs %}
+  <p class="empty">No questions asked yet.</p>
+  {% endif %}
+  {% for run in runs %}
+  <a class="run-card" href="/run/{{ run.run_id }}">
+    <span class="q">{{ run.question }}</span>
+    <span class="when">{{ run.created }}</span>
+    {% if run.status == "running" %}
+    <span class="badge running"><span class="spinner"></span> running</span>
+    {% else %}
+    <span class="badge {{ run.status }}">{{ run.status }}</span>
+    {% endif %}
+  </a>
+  {% endfor %}
+</section>
+
+{% if legacy %}
+<section>
+  <h2>Answers without logs</h2>
+  {% for name in legacy %}
+  <a class="run-card" href="/answer/{{ name }}">
+    <span class="q">{{ name }}</span>
+    <span class="badge legacy">yaml</span>
+  </a>
+  {% endfor %}
+</section>
+{% endif %}
+</body>
+</html>

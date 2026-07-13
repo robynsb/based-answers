@@ -1,0 +1,27 @@
+question: "In RP2040 is there an instruction that can detect if a pull will be blocking? or if a pull has blocked?"
+concatenation: "The PIO has only nine instructions, and the PULL instruction has a Block bit that determines whether a PULL from an empty TX FIFO stalls or copies X to OSR. A nonblocking PULL on an empty TX FIFO does not stall and instead copies scratch X to OSR, providing a way for a PIO program to handle the empty FIFO case without blocking. A blocking PULL stalls when the TX FIFO is empty; after the fact, the stall can be detected from the system side by reading the PIO FDEBUG register's TXSTALL bit"
+answers:
+  - claim: "The PIO has only nine instructions, and the PULL instruction has a Block bit that determines whether a PULL from an empty TX FIFO stalls or copies X to OSR"
+    citations:
+      - text: "The PIO has a total of nine instructions: JMP, WAIT, IN, OUT, PUSH, PULL, MOV, IRQ, and SET."
+        page: 314
+        source: "RP-008371-DS-1-rp2040-datasheet.pdf"
+      - text: "Block: If 1, stall if TX FIFO is empty. If 0, pulling from an empty FIFO copies scratch X to OSR."
+        page: 328
+        source: "RP-008371-DS-1-rp2040-datasheet.pdf"
+  - claim: "A nonblocking PULL on an empty TX FIFO does not stall and instead copies scratch X to OSR, providing a way for a PIO program to handle the empty FIFO case without blocking"
+    citations:
+      - text: "Block: If 1, stall if TX FIFO is empty. If 0, pulling from an empty FIFO copies scratch X to OSR."
+        page: 328
+        source: "RP-008371-DS-1-rp2040-datasheet.pdf"
+      - text: "A nonblocking PULL on an empty FIFO has the same effect as MOV OSR, X."
+        page: 328
+        source: "RP-008371-DS-1-rp2040-datasheet.pdf"
+  - claim: "A blocking PULL stalls when the TX FIFO is empty; after the fact, the stall can be detected from the system side by reading the PIO FDEBUG register's TXSTALL bit"
+    citations:
+      - text: "A blocking PULL when the TX FIFO is empty, or a blocking PUSH when the RX FIFO is full"
+        page: 318
+        source: "RP-008371-DS-1-rp2040-datasheet.pdf"
+      - text: "PIO: FDEBUG Register Offset: 0x008 Description FIFO debug register Table 370. FDEBUG Register Bits Description Type Reset 31:28 Reserved. - - 27:24 TXSTALL: State machine has stalled on empty TX FIFO during a blocking PULL, or an OUT with autopull enabled. Write 1 to clear."
+        page: 374
+        source: "RP-008371-DS-1-rp2040-datasheet.pdf"

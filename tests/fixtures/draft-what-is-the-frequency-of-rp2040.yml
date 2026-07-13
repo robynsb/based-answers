@@ -1,0 +1,22 @@
+question: "What is the frequency of RP2040?"
+concatenation: "The RP2040 microcontroller features dual ARM Cortex-M0+ processor cores running at up to 133MHz standard, or up to 200MHz with an elevated core supply of 1.15V. The system clock (clk_sys) has a maximum frequency of 133MHz across all process, voltage and temperature variations, but can achieve 200MHz by running at an elevated core supply (DVDD) and setting VREG VSEL to 1.15V."
+answers:
+  - claim: "The RP2040 features dual ARM Cortex-M0+ processor cores running at up to 133MHz"
+    citations:
+      - text: "Dual ARM Cortex-M0+ @ 133MHz"
+        page: 9
+        source: "RP-008371-DS-1-rp2040-datasheet.pdf"
+      - text: "Dual Cortex M0+ processor cores, up to 133MHz"
+        page: 10
+        source: "RP-008371-DS-1-rp2040-datasheet.pdf"
+      - text: "clk_sys (and clk_peri) have a maximum frequency of 133MHz across all process, voltage and temperature variations."
+        page: 184
+        source: "RP-008371-DS-1-rp2040-datasheet.pdf"
+  - claim: "The RP2040 can operate at up to 200MHz with an elevated core supply of 1.15V"
+    citations:
+      - text: "Dual Cortex M0+ processor cores, up to 133MHz (or 200MHz at 1.15V, see Section 2.15.3)"
+        page: 10
+        source: "RP-008371-DS-1-rp2040-datasheet.pdf"
+      - text: "You can achieve 200MHz by running at an elevated core supply (DVDD) and setting VREG VSEL to 1.15V."
+        page: 184
+        source: "RP-008371-DS-1-rp2040-datasheet.pdf"

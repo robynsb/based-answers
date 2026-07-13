@@ -1,0 +1,8 @@
+question: "does pio_sm_restart restart the program counter?"
+concatenation: "pio_sm_restart does not restart the program counter; the program counter is explicitly listed as not affected"
+answers:
+  - claim: "pio_sm_restart does not restart the program counter; the program counter is explicitly listed as not affected"
+    citations:
+      - text: "SM_RESTART: Write 1 to instantly clear internal SM state which may be otherwise difficult to access and will affect future execution. Specifically, the following are cleared: input and output shift counters; the contents of the input shift register; the delay counter; the waiting-on-IRQ state; any stalled instruction written to SMx_INSTR or run by OUT/MOV EXEC; any pin write left asserted due to OUT_STICKY. The program counter, the contents of the output shift register and the X/Y scratch registers are not affected."
+        page: 373
+        source: "RP-008371-DS-1-rp2040-datasheet.pdf"

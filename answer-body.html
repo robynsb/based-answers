@@ -1,0 +1,30 @@
+{% if errors %}
+<div class="error-banner">{{ errors | join("<br>") }}</div>
+{% endif %}
+
+{% if unable %}
+<p class="unable">Unable to answer this question given the sources.</p>
+{% else %}
+  <p class="concatenation">{{ concatenation | safe }}</p>
+
+  <section class="references">
+    <h2>References</h2>
+    {% for ref in all_references %}
+    <div class="ref-card">
+      <div>
+        <span class="num">[{{ ref.num }}]</span>
+        <span class="meta">
+          <a href="{{ ref.pdf_url }}#page={{ ref.page }}">p.{{ ref.page }}</a>
+          &mdash; {{ ref.source_name }}
+        </span>
+      </div>
+      <blockquote>&ldquo;{{ ref.text }}&rdquo;</blockquote>
+      <div class="pdf-preview-wrap" data-pdf="{{ ref.pdf_url }}" data-page="{{ ref.page }}"
+           data-highlights='{{ ref.highlights_json | safe }}'
+           data-page-w="{{ ref.page_width }}" data-page-h="{{ ref.page_height }}">
+        <canvas></canvas>
+      </div>
+    </div>
+    {% endfor %}
+  </section>
+{% endif %}

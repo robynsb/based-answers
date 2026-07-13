@@ -1,0 +1,33 @@
+question: "In RP2040, can one PIO machine stall untill another tells it to start?"
+concatenation: "One PIO state machine can synchronise with another by using IRQ flags — one state machine can set a flag using the IRQ instruction, and another can wait for that flag using the WAIT IRQ instruction, which stalls the state machine until the flag is set. The WAIT instruction is a stalling instruction whose operation is to stall until some condition is met; with WAIT 1 IRQ, the selected IRQ flag is cleared by the state machine upon the wait condition being met. The IRQ instruction sets or clears an IRQ flag, and when the MSB of the index argument is set, modulo-4 addition on the two LSBs allows relative addressing so multiple state machines running the same program can synchronise with each other"
+answers:
+  - claim: "One PIO state machine can synchronise with another by using IRQ flags — one state machine can set a flag using the IRQ instruction, and another can wait for that flag using the WAIT IRQ instruction, which stalls the state machine until the flag is set"
+    citations:
+      - text: "State machines can not communicate data, but they can synchronise with one another by using the IRQ flags. There are 8 flags total (the lower four of which can be masked for use as system IRQs), and each state machine can set or clear any flag using the IRQ instruction, and can wait for a flag to go high or low using the WAIT IRQ instruction. This allows cycle-accurate synchronisation between state machines."
+        page: 319
+        source: "RP-008371-DS-1-rp2040-datasheet.pdf"
+      - text: "State machines may momentarily pause execution for a number of reasons: • A WAIT instruction's condition is not yet met"
+        page: 318
+        source: "RP-008371-DS-1-rp2040-datasheet.pdf"
+  - claim: "The WAIT instruction is a stalling instruction whose operation is to stall until some condition is met; with WAIT 1 IRQ, the selected IRQ flag is cleared by the state machine upon the wait condition being met"
+    citations:
+      - text: "Each instruction takes precisely one cycle, unless it explicitly stalls (such as the WAIT instruction)."
+        page: 314
+        source: "RP-008371-DS-1-rp2040-datasheet.pdf"
+      - text: "State machines may momentarily pause execution for a number of reasons: • A WAIT instruction's condition is not yet met"
+        page: 318
+        source: "RP-008371-DS-1-rp2040-datasheet.pdf"
+      - text: "WAIT x IRQ behaves slightly differently from other WAIT sources: • If Polarity is 1, the selected IRQ flag is cleared by the state machine upon the wait condition being met."
+        page: 325
+        source: "RP-008371-DS-1-rp2040-datasheet.pdf"
+  - claim: "The IRQ instruction sets or clears an IRQ flag, and when the MSB of the index argument is set, modulo-4 addition on the two LSBs allows relative addressing so multiple state machines running the same program can synchronise with each other"
+    citations:
+      - text: "Set or clear the IRQ flag selected by Index argument. • Clear: if 1, clear the flag selected by Index, instead of raising it. If Clear is set, the Wait bit has no effect. • Wait: if 1, halt until the raised flag is lowered again, e.g. if a system interrupt handler has acknowledged the flag. • Index: ◦The 3 LSBs specify an IRQ index from 0-7. This IRQ flag will be set/cleared depending on the Clear bit. ◦If the MSB is set, the state machine ID (0…3) is added to the IRQ index, by way of modulo-4 addition on the two LSBs."
+        page: 331
+        source: "RP-008371-DS-1-rp2040-datasheet.pdf"
+      - text: "The flag index is decoded in the same way as the IRQ index field: if the MSB is set, the state machine ID (0…3) is added to the IRQ index, by way of modulo-4 addition on the two LSBs. For example, state machine 2 with a flag value of '0x11' will wait on flag 3, and a flag value of '0x13' will wait on flag 1. This allows multiple state machines running the same program to synchronise with each other."
+        page: 325
+        source: "RP-008371-DS-1-rp2040-datasheet.pdf"
+      - text: "The modulo addition bit allows relative addressing of 'IRQ' and 'WAIT' instructions, for synchronising state machines which are running the same program."
+        page: 331
+        source: "RP-008371-DS-1-rp2040-datasheet.pdf"
