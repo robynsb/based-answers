@@ -52,18 +52,18 @@ Use the `write_answer` tool to create your answer file. It derives the slug from
 The YAML structure is:
 
 ```yaml
-question: "What is the maximum clock speed of the RP2350?"
+question: "Why did the Great Fire of London spread so quickly in 1666?"
 answers:
-  - claim: "The dual Cortex-M33 or Hazard3 processors run at 150 MHz"
+  - claim: "The closely packed timber houses and a long dry spell had left the city primed to burn"
     citations:
-      - text: "Dual Cortex-M33 or Hazard3 processors at 150 MHz"
-        page: 14
-        source: "RP-008373-DS-2-rp2350-datasheet.pdf"
-  - claim: "The maximum system frequency is 150 MHz"
+      - text: "The houses of the old city were built for the most part of timber and pitch, their upper storeys leaning out across the narrow lanes until they almost met overhead. The summer had been unusually hot and dry, so that the beams and thatch were as ready to catch as tinder, and there was scarcely a gap between one dwelling and the next to check a flame once it had taken hold."
+        page: 18
+        source: "the-great-fire-of-london.pdf"
+  - claim: "A strong easterly wind carried burning fragments from house to house faster than the fire could be fought"
     citations:
-      - text: "the maximum system frequency of 150 MHz"
-        page: 90
-        source: "RP-008373-DS-2-rp2350-datasheet.pdf"
+      - text: "All through that first night a fierce wind blew from the east, snatching up sparks and burning shreds of wood and flinging them far ahead of the blaze. Faster than any line of men with buckets could hope to follow, the flames leapt from roof to roof, so that street after street was alight before the inhabitants had fairly woken to their danger."
+        page: 21
+        source: "the-great-fire-of-london.pdf"
 ```
 
 If no answer is possible:
@@ -74,7 +74,7 @@ answers: []
 
 Rules for the YAML:
 - `text` must be a verbatim quote from the source (exact characters)
-- `text` must be at least 200 characters long (the deterministic verifier rejects shorter quotes): quote the whole passage around the supporting sentence(s), not a bare snippet. The example quotes above are abbreviated for illustration only.
+- `text` must be at least 200 characters long (the deterministic verifier rejects shorter quotes): quote the whole passage around the supporting sentence(s), not a bare snippet.
 - `page` is the page number where the text appears
 - A quote may run across a page break: keep it as ONE citation and set `page` to the page where the quote starts. At least ~20 characters of the quote must be on the stated page; the rest may continue on the next page. Do not split the quote into fragments per page.
 - `source` is the PDF filename
