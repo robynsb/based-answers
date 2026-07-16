@@ -101,6 +101,46 @@
   @keyframes spin { to { transform: rotate(360deg); } }
   .empty { color: var(--muted); font-style: italic; padding: 1rem 0; }
   section { margin-bottom: 2.5rem; }
+  .sources-panel {
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: 8px;
+    padding: 0.8rem 1rem;
+    margin-bottom: 2.5rem;
+    font-size: 0.9rem;
+  }
+  .sources-panel h2 {
+    border: none;
+    padding: 0;
+    margin-bottom: 0.4rem;
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--muted);
+  }
+  .sources-panel a {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 0.6rem;
+    color: var(--accent);
+    text-decoration: none;
+    padding: 0.2rem 0;
+  }
+  .sources-panel a:hover .name { text-decoration: underline; }
+  .sources-panel .name { word-break: break-word; }
+  .sources-panel .pages { color: var(--muted); font-size: 0.8rem; white-space: nowrap; }
+  @media (min-width: 1460px) {
+    .sources-panel {
+      position: fixed;
+      top: 2rem;
+      right: 1rem;
+      width: 260px;
+      margin: 0;
+      max-height: calc(100vh - 4rem);
+      overflow-y: auto;
+    }
+  }
 </style>
 </head>
 <body>
@@ -110,6 +150,8 @@
   <input name="question" placeholder="Ask a question about the sources…" autofocus required>
   <button type="submit">Ask</button>
 </form>
+
+{% include "sources-panel.html" %}
 
 <section>
   <h2>Questions</h2>

@@ -68,6 +68,7 @@ class PipelineServer:
         self.build_context = build_context
         self.skill_dir = Path(skill_dir) if skill_dir else Path(__file__).parent.resolve()
         self.pdfs: dict[str, str] = {}  # basename -> absolute path
+        self.pdf_sources: list[dict] = []  # [{name, pages}] for the sources side panel
         self._local = threading.local()
         self._clients: dict[str, list[queue.Queue]] = {}
         self._lock = threading.Lock()
@@ -174,9 +175,12 @@ class PipelineServer:
 
     # ── PDFs ────────────────────────────────────────────────────
 
-    def register_pdf(self, path):
+    def register_pdf(self, path, pages=None):
         p = Path(path).resolve()
         self.pdfs[p.name] = str(p)
+        self.pdf_sources = [s for s in self.pdf_sources if s["name"] != p.name]
+        self.pdf_sources.append({"name": p.name, "pages": pages})
+        self.pdf_sources.sort(key=lambda s: s["name"])
 
     def pdf_url_for(self, source_name: str, source_path: str) -> str:
         return f"/pdf/{Path(source_path).name}"
@@ -213,7 +217,8 @@ class PipelineServer:
                 p.name for p in sorted(Path("answers").glob("*.yml"))
                 if p.name not in run_yaml_names
             ] if Path("answers").is_dir() else []
-            return render_template("index.html", runs=runs, legacy=legacy)
+            return render_template("index.html", runs=runs, legacy=legacy,
+                                   sources=server.pdf_sources)
 
         @app.post("/ask")
         def ask():
@@ -235,6 +240,7 @@ class PipelineServer:
                 status=run["status"],
                 max_rounds=server.max_rounds,
                 prerendered=None,
+                sources=server.pdf_sources,
             )
 
         @app.get("/answer/<name>")
@@ -255,6 +261,7 @@ class PipelineServer:
                 status="legacy",
                 max_rounds=server.max_rounds,
                 prerendered=fragment,
+                sources=server.pdf_sources,
             )
 
         @app.get("/pdf/<name>")

@@ -1,0 +1,11 @@
+{% if sources %}
+<aside class="sources-panel">
+  <h2>Sources</h2>
+  {% for s in sources %}
+  <a href="/pdf/{{ s.name }}" target="_blank" rel="noopener">
+    <span class="name">{{ s.name }}</span>
+    {% if s.pages and s.pages != "?" %}<span class="pages">{{ s.pages }} pages</span>{% endif %}
+  </a>
+  {% endfor %}
+</aside>
+{% endif %}

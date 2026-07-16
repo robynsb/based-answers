@@ -209,6 +209,48 @@
   .round-nav .nav-label { color: var(--muted); white-space: nowrap; }
   .round-nav.history { border-color: var(--warn); }
   .round-nav.history .nav-label { color: var(--warn); font-weight: 600; }
+
+  /* available PDF sources side panel */
+  .sources-panel {
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: 8px;
+    padding: 0.8rem 1rem;
+    margin: 2.5rem 0;
+    font-size: 0.9rem;
+  }
+  .sources-panel h2 {
+    border: none;
+    padding: 0;
+    margin-bottom: 0.4rem;
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--muted);
+  }
+  .sources-panel a {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 0.6rem;
+    color: var(--accent);
+    text-decoration: none;
+    padding: 0.2rem 0;
+  }
+  .sources-panel a:hover .name { text-decoration: underline; }
+  .sources-panel .name { word-break: break-word; }
+  .sources-panel .pages { color: var(--muted); font-size: 0.8rem; white-space: nowrap; }
+  @media (min-width: 1460px) {
+    .sources-panel {
+      position: fixed;
+      top: 2rem;
+      right: 1rem;
+      width: 260px;
+      margin: 0;
+      max-height: calc(100vh - 4rem);
+      overflow-y: auto;
+    }
+  }
 </style>
 </head>
 <body>
@@ -529,6 +571,8 @@ rebuild();
 connect();
 </script>
 {% endif %}
+
+{% include "sources-panel.html" %}
 
 <script type="module">
 import * as pdfjsLib from "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.0.379/pdf.min.mjs";

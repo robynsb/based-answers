@@ -745,7 +745,7 @@ def main():
         skill_dir=SKILL_DIR,
     )
     for info in PDF_INFO:
-        SERVER.register_pdf(info["abspath"])
+        SERVER.register_pdf(info["abspath"], pages=info["pages"])
 
     url = SERVER.start(args.port)
     install_banner(f"Based Answers serving at {url}")
