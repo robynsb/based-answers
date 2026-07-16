@@ -153,6 +153,12 @@ class PipelineServer:
             ).fetchone()
             if not shared:
                 Path(run["yaml_path"]).unlink(missing_ok=True)
+        # The searcher context file is keyed by slug and shared by re-asks;
+        # remove it only once the last run of this slug is gone
+        if not db.execute(
+            "SELECT 1 FROM runs WHERE slug=? LIMIT 1", (run["slug"],)
+        ).fetchone():
+            (Path("answers") / f"{run['slug']}-context.md").unlink(missing_ok=True)
 
     def events_after(self, run_id: str, last_id: int) -> list:
         return self.db().execute(

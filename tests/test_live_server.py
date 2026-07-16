@@ -101,6 +101,23 @@ class TestRoutes(ServerTestCase):
         self.assertEqual(server.events_after(run_id, 0), [])
         self.assertFalse(yaml_path.exists())
 
+    def test_delete_run_removes_context_file_with_last_run_of_slug(self):
+        server = make_server(self.tmpdir)
+        answers = self.tmpdir / "answers"
+        answers.mkdir()
+        context = answers / "slug-context.md"
+        context.write_text("# context\n")
+        first = server.create_run("q", "slug")
+        second = server.create_run("q", "slug")
+        for run_id in (first, second):
+            server.set_status(run_id, "passed")
+
+        client = server.app.test_client()
+        client.post(f"/run/{first}/delete")
+        self.assertTrue(context.exists())  # slug-2 still uses it
+        client.post(f"/run/{second}/delete")
+        self.assertFalse(context.exists())
+
     def test_delete_run_refuses_running_and_unknown(self):
         server = make_server(self.tmpdir)
         run_id = server.create_run("q", "slug")
