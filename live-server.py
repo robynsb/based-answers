@@ -137,6 +137,23 @@ class PipelineServer:
     def list_runs(self) -> list:
         return self.db().execute("SELECT * FROM runs ORDER BY created_at DESC").fetchall()
 
+    def delete_run(self, run_id: str):
+        db = self.db()
+        run = self.get_run(run_id)
+        if run is None:
+            return
+        db.execute("DELETE FROM events WHERE run_id=?", (run_id,))
+        db.execute("DELETE FROM runs WHERE run_id=?", (run_id,))
+        db.commit()
+        # Remove the answer YAML too, unless another run still points at it —
+        # otherwise it would resurface under "Answers without logs"
+        if run["yaml_path"]:
+            shared = db.execute(
+                "SELECT 1 FROM runs WHERE yaml_path=? LIMIT 1", (run["yaml_path"],)
+            ).fetchone()
+            if not shared:
+                Path(run["yaml_path"]).unlink(missing_ok=True)
+
     def events_after(self, run_id: str, last_id: int) -> list:
         return self.db().execute(
             "SELECT id, event, data FROM events WHERE run_id=? AND id>? ORDER BY id",
@@ -228,6 +245,16 @@ class PipelineServer:
             run_id = server.submit(question)
             return redirect(f"/run/{run_id}")
 
+        @app.post("/run/<run_id>/delete")
+        def delete_run(run_id):
+            run = server.get_run(run_id)
+            if run is None:
+                abort(404)
+            if run["status"] == "running":
+                abort(409, description="Cannot delete a run that is still running")
+            server.delete_run(run_id)
+            return redirect("/")
+
         @app.get("/run/<run_id>")
         def run_page(run_id):
             run = server.get_run(run_id)
@@ -263,6 +290,21 @@ class PipelineServer:
                 prerendered=fragment,
                 sources=server.pdf_sources,
             )
+
+        @app.post("/answer/<name>/delete")
+        def delete_legacy_answer(name):
+            path = Path("answers") / name
+            if "/" in name or not path.is_file() or path.suffix != ".yml":
+                abort(404)
+            # Only legacy files are deletable here; a run's YAML belongs to
+            # its run and goes through /run/<run_id>/delete
+            rows = server.db().execute(
+                "SELECT yaml_path FROM runs WHERE yaml_path IS NOT NULL"
+            ).fetchall()
+            if any(Path(r["yaml_path"]).name == name for r in rows):
+                abort(409, description="This answer belongs to a run")
+            path.unlink(missing_ok=True)
+            return redirect("/")
 
         @app.get("/pdf/<name>")
         def pdf(name):

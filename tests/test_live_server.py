@@ -85,6 +85,54 @@ class TestRoutes(ServerTestCase):
         self.assertIn("Round –/5", body)
         self.assertEqual(server.app.test_client().get("/run/nope").status_code, 404)
 
+    def test_delete_run_removes_row_events_and_yaml(self):
+        server = make_server(self.tmpdir)
+        answers = self.tmpdir / "answers"
+        answers.mkdir()
+        yaml_path = answers / "slug.yml"
+        yaml_path.write_text("question: q\nanswers: []\n")
+        run_id = server.create_run("q", "slug")
+        server.emit(run_id, "phase", {"phase": "passed", "round": 1})
+        server.set_status(run_id, "passed", str(yaml_path))
+
+        resp = server.app.test_client().post(f"/run/{run_id}/delete")
+        self.assertEqual(resp.status_code, 302)
+        self.assertIsNone(server.get_run(run_id))
+        self.assertEqual(server.events_after(run_id, 0), [])
+        self.assertFalse(yaml_path.exists())
+
+    def test_delete_run_refuses_running_and_unknown(self):
+        server = make_server(self.tmpdir)
+        run_id = server.create_run("q", "slug")
+        client = server.app.test_client()
+        self.assertEqual(client.post(f"/run/{run_id}/delete").status_code, 409)
+        self.assertIsNotNone(server.get_run(run_id))
+        self.assertEqual(client.post("/run/nope/delete").status_code, 404)
+
+    def test_delete_legacy_answer(self):
+        server = make_server(self.tmpdir)
+        answers = self.tmpdir / "answers"
+        answers.mkdir()
+        legacy = answers / "old-question.yml"
+        legacy.write_text("question: q\nanswers: []\n")
+        client = server.app.test_client()
+        resp = client.post("/answer/old-question.yml/delete")
+        self.assertEqual(resp.status_code, 302)
+        self.assertFalse(legacy.exists())
+        self.assertEqual(client.post("/answer/missing.yml/delete").status_code, 404)
+
+    def test_delete_legacy_answer_refuses_run_yaml(self):
+        server = make_server(self.tmpdir)
+        answers = self.tmpdir / "answers"
+        answers.mkdir()
+        yaml_path = answers / "slug.yml"
+        yaml_path.write_text("question: q\nanswers: []\n")
+        run_id = server.create_run("q", "slug")
+        server.set_status(run_id, "passed", str(yaml_path))
+        resp = server.app.test_client().post("/answer/slug.yml/delete")
+        self.assertEqual(resp.status_code, 409)
+        self.assertTrue(yaml_path.exists())
+
     def test_pdf_whitelist(self):
         server = make_server(self.tmpdir)
         pdf = self.tmpdir / "doc.pdf"

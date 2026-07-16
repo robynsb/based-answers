@@ -62,6 +62,7 @@
   .ask-form button:hover { opacity: 0.9; }
   h2 { font-size: 1.1rem; margin-bottom: 1rem; border-bottom: 1px solid var(--border); padding-bottom: 0.3rem; }
   .run-card {
+    position: relative;
     display: flex;
     align-items: center;
     gap: 0.8rem;
@@ -70,11 +71,24 @@
     border-radius: 8px;
     padding: 0.8rem 1rem;
     margin-bottom: 0.6rem;
-    text-decoration: none;
-    color: var(--text);
   }
   .run-card:hover { border-color: var(--accent); }
-  .run-card .q { flex: 1; }
+  .run-card .q { flex: 1; color: var(--text); text-decoration: none; }
+  .run-card .q::after { content: ""; position: absolute; inset: 0; }
+  .run-card .delete {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    padding: 0.3rem;
+    background: none;
+    border: none;
+    border-radius: 6px;
+    color: var(--muted);
+    cursor: pointer;
+  }
+  .run-card .delete:hover { color: var(--bad); background: rgba(220, 38, 38, 0.08); }
+  .run-card form { display: flex; }
   .run-card .when { font-size: 0.8rem; color: var(--muted); white-space: nowrap; }
   .badge {
     font-size: 0.75rem;
@@ -160,15 +174,21 @@
   <p class="empty">No questions asked yet.</p>
   {% endif %}
   {% for run in runs %}
-  <a class="run-card" href="/run/{{ run.run_id }}">
-    <span class="q">{{ run.question }}</span>
+  <div class="run-card">
+    <a class="q" href="/run/{{ run.run_id }}">{{ run.question }}</a>
     <span class="when">{{ run.created }}</span>
     {% if run.status == "running" %}
     <span class="badge running"><span class="spinner"></span> running</span>
     {% else %}
     <span class="badge {{ run.status }}">{{ run.status }}</span>
+    <form method="post" action="/run/{{ run.run_id }}/delete"
+          onsubmit="return confirm('Delete this question and its answer?')">
+      <button class="delete" type="submit" title="Delete" aria-label="Delete {{ run.question }}">
+        {% include "trash-icon.svg" %}
+      </button>
+    </form>
     {% endif %}
-  </a>
+  </div>
   {% endfor %}
 </section>
 
@@ -176,10 +196,16 @@
 <section>
   <h2>Answers without logs</h2>
   {% for name in legacy %}
-  <a class="run-card" href="/answer/{{ name }}">
-    <span class="q">{{ name }}</span>
+  <div class="run-card">
+    <a class="q" href="/answer/{{ name }}">{{ name }}</a>
     <span class="badge legacy">yaml</span>
-  </a>
+    <form method="post" action="/answer/{{ name }}/delete"
+          onsubmit="return confirm('Delete this answer file?')">
+      <button class="delete" type="submit" title="Delete" aria-label="Delete {{ name }}">
+        {% include "trash-icon.svg" %}
+      </button>
+    </form>
+  </div>
   {% endfor %}
 </section>
 {% endif %}
