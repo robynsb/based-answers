@@ -225,12 +225,15 @@ def normalize_for_match(text: str) -> tuple[str, list[int]]:
     return "".join(out), idx_map
 
 
-def cmd_search(data: dict, query: str, limit: int = 10, context_chars: int = 300):
+def find_matches(data: dict, query: str, context_chars: int = 300) -> list[dict]:
+    """Find every chunk matching query, returning all of them (no limit) as
+    [{"page", "snippet"}, ...]. Shared by the pdf_search CLI/tool and by
+    verify-citations.py, which reruns a search_result citation's query
+    against the same cache to confirm the claimed results are complete."""
     norm_query, _ = normalize_for_match(query)
     norm_query = norm_query.strip()
     if not norm_query:
-        print("No matches found.")
-        return
+        return []
     pattern = re.compile(re.escape(norm_query), re.IGNORECASE)
     matches = []
     for chunk in data["chunks"]:
@@ -253,6 +256,79 @@ def cmd_search(data: dict, query: str, limit: int = 10, context_chars: int = 300
                 "page": chunk["page"],
                 "snippet": snippet,
             })
+    return matches
+
+
+def find_distinct_matches(data: dict, pattern: str, context_chars: int = 300,
+                          max_matches: int = 100) -> dict:
+    """Enumerate every distinct string a regex matches anywhere in the doc —
+    for search_result citations proving absence/exhaustiveness across a
+    whole family of names (e.g. "no pio_sm_* getter reads enabled state"),
+    where trying a handful of guessed literal names can never be exhaustive.
+
+    Matching runs on the same normalized (typography-folded) text as
+    find_matches, so a match string is always re-findable in a verbatim
+    snippet by re-normalizing that snippet the same way (see
+    verify-citations.py's check_search_result). Deduplicates by the exact
+    matched substring, keeping the first chunk/page it's seen on for its
+    example snippet.
+
+    Returns {"matches": [{"match", "page", "snippet"}, ...]} on success, or
+    {"error": "invalid_pattern", "detail": ...} / {"error": "too_broad",
+    "count": N} — never a silently truncated list, since a truncated
+    enumeration could hide the exact symbol that disproves the claim.
+    """
+    try:
+        compiled = re.compile(pattern, re.IGNORECASE)
+    except re.error as e:
+        return {"error": "invalid_pattern", "detail": str(e)}
+
+    seen: dict[str, dict] = {}
+    for chunk in data["chunks"]:
+        text = chunk["text"]
+        norm_text, idx_map = normalize_for_match(text)
+        for m in compiled.finditer(norm_text):
+            matched = m.group(0)
+            if matched in seen:
+                continue
+            orig_start = idx_map[m.start()]
+            orig_end = idx_map[m.end() - 1] + 1
+            start = max(0, orig_start - context_chars // 2)
+            end = min(len(text), orig_end + context_chars // 2)
+            snippet = text[start:end]
+            if start > 0:
+                snippet = "..." + snippet
+            if end < len(text):
+                snippet = snippet + "..."
+            seen[matched] = {"match": matched, "page": chunk["page"], "snippet": snippet}
+            if len(seen) > max_matches:
+                return {"error": "too_broad", "count": len(seen)}
+
+    return {"matches": list(seen.values())}
+
+
+def cmd_search_regex(data: dict, pattern: str, context_chars: int = 300, max_matches: int = 100):
+    result = find_distinct_matches(data, pattern, context_chars=context_chars, max_matches=max_matches)
+    if "error" in result:
+        if result["error"] == "invalid_pattern":
+            print(f"Error: invalid regex pattern: {result['detail']}")
+        else:
+            print(f"Error: pattern matches too many distinct strings (>{max_matches}) "
+                  f"to enumerate exhaustively — narrow the pattern")
+        return
+    matches = result["matches"]
+    if not matches:
+        print("No matches found.")
+        return
+    print(f"{len(matches)} distinct match(es):\n")
+    for m in matches:
+        print(f"--- {m['match']} (page {m['page']}) ---")
+        print(m["snippet"])
+        print()
+
+
+def cmd_search(data: dict, query: str, limit: int = 10, context_chars: int = 300):
+    matches = find_matches(data, query, context_chars=context_chars)
 
     if not matches:
         print("No matches found.")
@@ -293,6 +369,12 @@ def make_parser():
     search_p.add_argument("--limit", type=int, default=10)
     search_p.add_argument("--context-chars", type=int, default=300)
 
+    search_regex_p = sub.add_parser(
+        "search-regex", help="Enumerate every distinct match of a regex pattern")
+    search_regex_p.add_argument("pattern", help="Regex pattern (matched case-insensitively)")
+    search_regex_p.add_argument("--context-chars", type=int, default=300)
+    search_regex_p.add_argument("--max-matches", type=int, default=100)
+
     get_p = sub.add_parser("get", help="Get full page text")
     get_p.add_argument("pages", nargs="+", type=int, help="Page numbers")
 
@@ -313,6 +395,8 @@ def main():
         cmd_info(data)
     elif parsed.command == "search":
         cmd_search(data, " ".join(parsed.query), parsed.limit, parsed.context_chars)
+    elif parsed.command == "search-regex":
+        cmd_search_regex(data, parsed.pattern, parsed.context_chars, parsed.max_matches)
     elif parsed.command == "get":
         cmd_get(data, parsed.pages)
 

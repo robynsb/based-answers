@@ -20,11 +20,27 @@ YAML input format:
 
 import argparse
 import difflib
+import importlib.util
 import json
 import os
 import re
 import sys
 from pathlib import Path
+
+
+def _load_pdf_search_module():
+    """Import pdf-search.py by file path: this script's cwd is the working
+    directory (where the PDFs/cache live), not the skill dir, so a plain
+    `import pdf_search` won't resolve — the module must be found relative to
+    this file's own location instead."""
+    path = Path(__file__).parent / "pdf-search.py"
+    spec = importlib.util.spec_from_file_location("pdf_search", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_pdf_search = _load_pdf_search_module()
 
 
 def load_yaml(path: str) -> dict:
@@ -299,6 +315,159 @@ def check_citation(citation_text: str, page: int, cache: dict) -> dict:
     return {"found": False, "reason": reason, "suggestions": suggestions}
 
 
+def check_search_result(cit: dict) -> dict:
+    """Verify a search_result citation. `mode: regex` citations enumerate
+    every distinct string a regex matches anywhere in the source (proving
+    absence/exhaustiveness across a whole family of names); anything else
+    is the original literal-query mode (one result per literal hit)."""
+    if cit.get("mode") == "regex":
+        return _check_search_result_regex(cit)
+    return _check_search_result_literal(cit)
+
+
+def _check_search_result_literal(cit: dict) -> dict:
+    """Verify a literal-query search_result citation two ways:
+
+    1. Each claimed result's `text` must actually appear on its stated
+       `page` (via the same leniency ladder as normal citations) — otherwise
+       an agent could pair a real hit page with a fabricated snippet, which
+       would corrupt both the semantic checker's judgment and the quote
+       shown to the user.
+    2. The *set* of claimed pages must exactly match the set of pages an
+       independent rerun of `query` actually hits (unbounded — no `limit`).
+       Set (not multiset) equality, so a page containing two matching
+       chunks doesn't spuriously fail when the agent lists that page once.
+       Exact equality catches both a fabricated page (claimed, not found)
+       and a dropped page (found, not claimed) — the latter being the
+       failure mode that would let an agent quietly break an exhaustiveness
+       claim by omitting an inconvenient result.
+    """
+    query = cit.get("query")
+    if not isinstance(query, str) or not query.strip():
+        return {"found": False, "reason": "search_result citation missing a non-empty 'query'"}
+
+    results = cit.get("results")
+    if not isinstance(results, list):
+        return {"found": False, "reason": "search_result citation's 'results' must be a list"}
+
+    for r in results:
+        if not isinstance(r, dict) or not isinstance(r.get("page"), int) \
+                or not isinstance(r.get("text"), str) or not r.get("text").strip():
+            return {"found": False,
+                    "reason": f"each result needs an int 'page' and non-empty 'text': got {r!r}"}
+
+    source = cit.get("source", "")
+    cache = load_pdf_cache(source)
+    if cache is None:
+        return {"found": False, "reason": f"Cache not found for {source}"}
+
+    for r in results:
+        page_text = _page_text(cache, r["page"])
+        if page_text is None or _match_in_text(r["text"], page_text) is None:
+            return {"found": False,
+                    "reason": f'result text for page {r["page"]} not found on that page — '
+                              f"copy the snippet verbatim from pdf_search's output"}
+
+    actual = _pdf_search.find_matches(cache, query)
+    claimed_pages = {r["page"] for r in results}
+    actual_pages = {m["page"] for m in actual}
+
+    if claimed_pages == actual_pages:
+        return {"found": True}
+
+    fabricated = sorted(claimed_pages - actual_pages)
+    omitted = sorted(actual_pages - claimed_pages)
+    parts = [f're-running query "{query}" against {source} does not match the claimed results']
+    if fabricated:
+        parts.append(f"claimed but not actually found on: page(s) {fabricated}")
+    if omitted:
+        parts.append(f"actually found but omitted from results: page(s) {omitted}")
+    return {"found": False, "reason": " -- ".join(parts)}
+
+
+def _check_search_result_regex(cit: dict) -> dict:
+    """Verify a mode: regex search_result citation, which enumerates every
+    DISTINCT string a regex pattern matches anywhere in the source (for
+    proving absence/exhaustiveness across a whole family of possible names,
+    e.g. "no pio_sm_* getter reads enabled state") instead of one result per
+    literal query hit.
+
+    1. Each claimed result's `text` must appear verbatim on its stated
+       `page`, same as the literal mode.
+    2. Each claimed `match` must actually be produced by re-running `query`
+       (the pattern) against that same `text` — checked on the same
+       normalized (typography-folded) form find_distinct_matches used to
+       derive `match` in the first place, so folding differences can't
+       cause a spurious mismatch across a fold boundary.
+    3. The *set* of claimed `match` strings must exactly equal the set an
+       independent, unbounded rerun of the pattern actually finds across
+       the whole document — catches both a fabricated symbol and one
+       dropped to make an exhaustiveness claim look cleaner than it is.
+    """
+    pattern = cit.get("query")
+    if not isinstance(pattern, str) or not pattern.strip():
+        return {"found": False,
+                "reason": "search_result citation missing a non-empty 'query' (regex pattern)"}
+
+    results = cit.get("results")
+    if not isinstance(results, list):
+        return {"found": False, "reason": "search_result citation's 'results' must be a list"}
+
+    for r in results:
+        if not isinstance(r, dict) or not isinstance(r.get("match"), str) or not r.get("match").strip() \
+                or not isinstance(r.get("page"), int) \
+                or not isinstance(r.get("text"), str) or not r.get("text").strip():
+            return {"found": False,
+                    "reason": f"each regex-mode result needs a non-empty 'match', int 'page', "
+                              f"and non-empty 'text': got {r!r}"}
+
+    try:
+        compiled = re.compile(pattern, re.IGNORECASE)
+    except re.error as e:
+        return {"found": False, "reason": f"invalid regex pattern {pattern!r}: {e}"}
+
+    source = cit.get("source", "")
+    cache = load_pdf_cache(source)
+    if cache is None:
+        return {"found": False, "reason": f"Cache not found for {source}"}
+
+    for r in results:
+        page_text = _page_text(cache, r["page"])
+        if page_text is None or _match_in_text(r["text"], page_text) is None:
+            return {"found": False,
+                    "reason": f'result text for page {r["page"]} not found on that page — '
+                              f"copy the snippet verbatim from pdf_search's output"}
+        norm_text, _ = _pdf_search.normalize_for_match(r["text"])
+        found_in_snippet = {m.group(0) for m in compiled.finditer(norm_text)}
+        if r["match"] not in found_in_snippet:
+            return {"found": False,
+                    "reason": f'claimed match "{r["match"]}" is not actually produced by pattern '
+                              f'{pattern!r} within its own result text'}
+
+    regen = _pdf_search.find_distinct_matches(cache, pattern)
+    if regen.get("error") == "invalid_pattern":
+        return {"found": False, "reason": f"invalid regex pattern {pattern!r}: {regen['detail']}"}
+    if regen.get("error") == "too_broad":
+        return {"found": False,
+                "reason": f"pattern {pattern!r} matches {regen['count']}+ distinct strings — "
+                          f"exhaustiveness isn't checkable at this scale, narrow the pattern"}
+
+    claimed_matches = {r["match"] for r in results}
+    actual_matches = {m["match"] for m in regen["matches"]}
+
+    if claimed_matches == actual_matches:
+        return {"found": True}
+
+    fabricated = sorted(claimed_matches - actual_matches)
+    omitted = sorted(actual_matches - claimed_matches)
+    parts = [f're-running pattern {pattern!r} against {source} does not match the claimed results']
+    if fabricated:
+        parts.append(f"claimed but not actually found: {fabricated}")
+    if omitted:
+        parts.append(f"actually found but omitted from results: {omitted}")
+    return {"found": False, "reason": " -- ".join(parts)}
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Deterministic citation verifier"
@@ -330,32 +499,45 @@ def main():
         claim = answer.get("claim", "")
         for cit in answer.get("citations", []):
             total += 1
-            cit_text = cit.get("text", "")
-            page = cit.get("page", 0)
+            is_search_result = cit.get("type") == "search_result"
             source = cit.get("source", "")
 
-            cache = load_pdf_cache(source)
-
             result = None
-            if len(cit_text) < MIN_CITATION_CHARS:
-                status = "FAIL"
-                reason = (f"Citation too short: {len(cit_text)} chars, minimum is "
-                          f"{MIN_CITATION_CHARS}. Quote a longer contiguous passage "
-                          f"around the supporting text")
-                failed += 1
-            elif cache is None:
-                status = "FAIL"
-                reason = f"Cache not found for {source}"
-                failed += 1
-            else:
-                result = check_citation(cit_text, page, cache)
+            if is_search_result:
+                result = check_search_result(cit)
                 if result["found"]:
-                    status = f"PASS ({result['method']})" if args.verbose else "PASS"
+                    status = "PASS"
                     passed += 1
                 else:
                     status = "FAIL"
                     reason = result.get("reason", "Not found")
                     failed += 1
+                cit_text = f'query: "{cit.get("query", "")}" ({len(cit.get("results") or [])} result(s))'
+                page = "n/a"
+            else:
+                cit_text = cit.get("text", "")
+                page = cit.get("page", 0)
+                cache = load_pdf_cache(source)
+
+                if len(cit_text) < MIN_CITATION_CHARS:
+                    status = "FAIL"
+                    reason = (f"Citation too short: {len(cit_text)} chars, minimum is "
+                              f"{MIN_CITATION_CHARS}. Quote a longer contiguous passage "
+                              f"around the supporting text")
+                    failed += 1
+                elif cache is None:
+                    status = "FAIL"
+                    reason = f"Cache not found for {source}"
+                    failed += 1
+                else:
+                    result = check_citation(cit_text, page, cache)
+                    if result["found"]:
+                        status = f"PASS ({result['method']})" if args.verbose else "PASS"
+                        passed += 1
+                    else:
+                        status = "FAIL"
+                        reason = result.get("reason", "Not found")
+                        failed += 1
 
             short_claim = claim[:58] + ".." if len(claim) > 58 else claim
             short_cit = cit_text[:48] + ".." if len(cit_text) > 48 else cit_text

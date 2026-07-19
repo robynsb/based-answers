@@ -156,6 +156,7 @@ def run_search_agent(prompt_path: Path | None, question: str, session_id: str | 
                      message: str | None = None, timeout: int = 600,
                      run_id: str | None = None) -> int:
     cmd = ["opencode", "run", "--agent", AGENT_NAME]
+    slug = run_id or derive_slug(question)
 
     if session_id:
         cmd.extend(["--session", session_id])
@@ -164,8 +165,7 @@ def run_search_agent(prompt_path: Path | None, question: str, session_id: str | 
             emit_line(run_id, "searcher",
                       f"── FEEDBACK SENT TO {AGENT_NAME} ──\n{message}\n{'─' * 40}\n")
     else:
-        title_id = run_id or derive_slug(question)
-        cmd.extend(["-f", str(prompt_path), "--title", f"citation-qa-{title_id}", question])
+        cmd.extend(["-f", str(prompt_path), "--title", f"citation-qa-{slug}", question])
         print(f"\n{'─' * 60}", flush=True)
         print(f"{run_tag(run_id)}CONTEXT GIVEN TO {AGENT_NAME}:", flush=True)
         print(f"{'─' * 60}", flush=True)
@@ -178,7 +178,10 @@ def run_search_agent(prompt_path: Path | None, question: str, session_id: str | 
     print(f"  {run_tag(run_id)}Agent: {label}", flush=True)
     print(f"{'-' * 50}", flush=True)
 
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+    # The write_answer tool reads this to know which answers/*.yml file to
+    # (over)write, so the searcher agent never has to know or pass a slug.
+    env = {**os.environ, "ANSWER_SLUG": slug}
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, env=env)
 
     denied = 0
     for line in iter(proc.stdout.readline, ""):
@@ -208,7 +211,12 @@ def run_deterministic(yaml_path: Path, pdf_dir: str = ".") -> dict:
         "--pdf-dir", pdf_dir,
         "-v", str(yaml_path),
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    except subprocess.TimeoutExpired:
+        return {"passed": False,
+                "output": "Verification timed out after 120s — check for a slow or "
+                          "pathological regex in a search_result citation"}
     output = (result.stdout or "") + (result.stderr or "")
     return {"passed": result.returncode == 0, "output": output}
 
@@ -258,7 +266,12 @@ def run_semantic_checkers(yaml_path: Path, run_id: str | None = None) -> list[di
         if not claim:
             continue
         emit(run_id, "claim-status", {"index": i, "claim": claim, "status": "checking"})
-        texts = [c.get("text", "") for c in a.get("citations", [])]
+        citations = a.get("citations", [])
+        texts = [c.get("text", "") for c in citations if c.get("type") != "search_result"]
+        search_results = [c for c in citations
+                          if c.get("type") == "search_result" and c.get("mode") != "regex"]
+        enumerations = [c for c in citations
+                        if c.get("type") == "search_result" and c.get("mode") == "regex"]
         previous_claims = [p.get("claim", "") for p in answers[:i] if p.get("claim", "")]
         rubric = f"""You are a claim verifier.
 
@@ -268,6 +281,33 @@ SOURCE_TEXTS:
 """
         for t in texts:
             rubric += f"  - \"{t}\"\n"
+
+        # Only claims that actually carry a search_result citation get these
+        # blocks and their judgment instructions below — claims backed purely
+        # by normal citations must see exactly today's rubric, unchanged.
+        if search_results:
+            rubric += "\nSEARCH_RESULTS (used to demonstrate absence/exhaustiveness):\n"
+            for sr in search_results:
+                query = sr.get("query", "")
+                source = sr.get("source", "")
+                sr_results = sr.get("results") or []
+                if not sr_results:
+                    rubric += f'  - QUERY: "{query}" on {source} → NO RESULTS FOUND\n'
+                else:
+                    rubric += f'  - QUERY: "{query}" on {source} → {len(sr_results)} result(s):\n'
+                    for r in sr_results:
+                        rubric += f'      - page {r.get("page")}: "{r.get("text", "")}"\n'
+
+        if enumerations:
+            rubric += "\nENUMERATION (every distinct match for a pattern — used to rule out a whole family of possible names):\n"
+            for en in enumerations:
+                pattern = en.get("query", "")
+                source = en.get("source", "")
+                en_results = en.get("results") or []
+                rubric += f'  - PATTERN: /{pattern}/ on {source} → {len(en_results)} distinct match(es):\n'
+                for r in en_results:
+                    rubric += f'      - "{r.get("match", "")}" (page {r.get("page")}) — snippet: "{r.get("text", "")}"\n'
+
         rubric += "\nPREVIOUS_CLAIMS (assume these are true; they may be used as premises):\n"
         if previous_claims:
             for p in previous_claims:
@@ -279,8 +319,28 @@ SOURCE_TEXTS:
 OUT-OF-CONTEXT CHECK: Every source must include text before, text related to the claim, and text after. If bare snippet → FAIL.
 If the source text does not itself name what the statement is about — i.e. the subject must be inferred (e.g. it only says "It was completed a year later" or "This method is unreliable" without naming the thing) — that source is out-of-context. If the claim needs or uses that inferred subject, respond FAIL.
 PREVIOUS_CLAIMS may only be combined with what the sources state; never use them to resolve pronouns or fill in the subject of a source text.
-
-Does the SYNTHESIS of all SOURCE_TEXTS together with PREVIOUS_CLAIMS strictly imply CLAIM?
+"""
+        if search_results:
+            rubric += """
+SEARCH_RESULTS CHECK: For each SEARCH_RESULTS entry, judge whether QUERY is a sufficiently thorough probe for what CLAIM asserts is absent/exhaustive. Consider obvious alternate phrasings, synonyms, abbreviations, or related terms a thorough search would also have tried (e.g. an acronym and its expansion, singular/plural, a formal term and its shortened form). If an obvious rephrasing or keyword is missing from QUERY that could plausibly surface different results, respond "FAIL: query not comprehensive — also try '<term>'". If CLAIM asserts absence across a whole family of possible names (not one specific exact term), a small number of literal exact-string queries can never be judged thorough without inventing what else might exist — respond "FAIL: use an ENUMERATION (regex) search instead of guessing individual names" — unless the family is small enough that every plausible member was actually tried literally. Only if every SEARCH_RESULTS query is adequately thorough should its (non-)results be treated as supporting CLAIM.
+"""
+        if enumerations:
+            rubric += """
+ENUMERATION CHECK: Each ENUMERATION entry is a COMPLETE, independently verified list — every distinct string that pattern matches anywhere in the source is listed above, nothing held back. Judge whether the enumerated list, together with SOURCE_TEXTS, supports CLAIM. Also judge whether the PATTERN itself covers the right family for CLAIM (e.g. is this the only relevant prefix) — if an obviously relevant related prefix/pattern was not also enumerated, respond "FAIL: also enumerate '<pattern>'".
+"""
+        parts = ["SOURCE_TEXTS"]
+        if search_results:
+            parts.append("SEARCH_RESULTS")
+        if enumerations:
+            parts.append("ENUMERATION")
+        if len(parts) == 1:
+            synthesis_sources = parts[0]
+        elif len(parts) == 2:
+            synthesis_sources = f"{parts[0]} and {parts[1]}"
+        else:
+            synthesis_sources = ", ".join(parts[:-1]) + f", and {parts[-1]}"
+        rubric += f"""
+Does the SYNTHESIS of all {synthesis_sources} together with PREVIOUS_CLAIMS strictly imply CLAIM?
 - YES: Respond "PASS"
 - FAIL (out-of-context): Respond "FAIL: out-of-context — <why>"
 - NO: Respond "FAIL: <what cannot be inferred>"
@@ -444,11 +504,15 @@ function run(args: string): string {{
 }}
 
 export default tool({{
-  description: "Search PDFs for text, retrieve full page content, or get document info",
+  description: "Search PDFs for text, enumerate every distinct match of a regex, retrieve full page content, or get document info",
   args: {{
-    action: tool.schema.enum(["search", "get", "info"]).describe("Action to perform"),
+    action: tool.schema.enum(["search", "search_regex", "get", "info"]).describe("Action to perform"),
     pdf: tool.schema.string().describe("Path to the PDF file"),
     query: tool.schema.string().optional().describe("Text to search for (required for search)"),
+    pattern: tool.schema.string().optional().describe(
+      "Regex pattern to enumerate (required for search_regex). Returns every DISTINCT matching " +
+      "string found anywhere in the document, deduplicated — use this instead of guessing a " +
+      "handful of literal names when a claim needs to rule out a whole family of possible names."),
     pages: tool.schema.array(tool.schema.number()).optional().describe("Page numbers to retrieve (required for get)"),
     limit: tool.schema.number().optional().describe("Max search results (default: 10)"),
   }},
@@ -459,6 +523,10 @@ export default tool({{
     if (args.action === "search") {{
       if (!args.query) return "Error: query is required for search"
       return run(`${{JSON.stringify(args.pdf)}} search ${{JSON.stringify(args.query)}} --limit ${{args.limit ?? 10}}`)
+    }}
+    if (args.action === "search_regex") {{
+      if (!args.pattern) return "Error: pattern is required for search_regex"
+      return run(`${{JSON.stringify(args.pdf)}} search-regex ${{JSON.stringify(args.pattern)}}`)
     }}
     if (args.action === "get") {{
       if (!args.pages || args.pages.length === 0) return "Error: page numbers required for get"
@@ -500,32 +568,19 @@ export default tool({{
 import * as fs from "fs"
 
 export default tool({{
-  description: "Write a citation-grounded answer YAML file. Derives the slug from the question and handles -N suffix for retries.",
+  description: "Write this run's citation-grounded answer YAML file, overwriting any previous round's attempt.",
   args: {{
-    question: tool.schema.string().describe("The original question (used to derive the filename slug)"),
     yaml_content: tool.schema.string().describe("Full YAML content to write"),
   }},
   async execute(args) {{
-    fs.mkdirSync("answers", {{ recursive: true }})
-
-    let slug = args.question.toLowerCase()
-      .replace(/[^a-z0-9\\s-]/g, "")
-      .replace(/\\s+/g, "-")
-      .replace(/-+/g, "-")
-      .replace(/^-|-$/g, "")
-      .slice(0, 80)
-
-    let filename = `answers/${{slug}}.yml`
-    if (fs.existsSync(filename)) {{
-      let n = 2
-      while (fs.existsSync(`answers/${{slug}}-${{n}}.yml`)) {{
-        n++
-      }}
-      filename = `answers/${{slug}}-${{n}}.yml`
+    const slug = process.env.ANSWER_SLUG
+    if (!slug) {{
+      throw new Error("ANSWER_SLUG is not set — this tool must be run inside the citation-qa pipeline")
     }}
-
+    fs.mkdirSync("answers", {{ recursive: true }})
+    const filename = `answers/${{slug}}.yml`
     fs.writeFileSync(filename, args.yaml_content, "utf-8")
-    return `${{filename}}`
+    return filename
   }},
 }})
 """)
@@ -628,7 +683,11 @@ def search_loop(slug: str, question: str, pdf_info: list[dict], rounds: list[dic
 
 def run_worker(run_id: str, question: str):
     """Executes one question's full pipeline; one thread per run."""
-    slug = derive_slug(question)
+    # run_id is already the disambiguated slug (create_run bumps -N for
+    # re-asks of an identical question), so file operations must key off
+    # it rather than re-deriving a base slug that could collide with an
+    # earlier, unrelated run of the same question.
+    slug = run_id
     try:
         rounds: list[dict] = []
         yaml_path, passed_round = search_loop(slug, question, PDF_INFO, rounds, PDF_DIR, run_id=run_id)

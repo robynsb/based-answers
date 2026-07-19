@@ -1,0 +1,18 @@
+question: "Does the RP2040 datasheet mention a quantum flux capacitor reset feature, and how many places describe the watchdog scratch registers?"
+answers:
+  - claim: "The RP2040 datasheet does not describe a quantum flux capacitor reset feature"
+    citations:
+      - type: search_result
+        source: "RP-008371-DS-1-rp2040-datasheet.pdf"
+        query: "quantum flux capacitor reset"
+        results: []
+  - claim: "The watchdog scratch registers are described in exactly two places in the datasheet"
+    citations:
+      - type: search_result
+        source: "RP-008371-DS-1-rp2040-datasheet.pdf"
+        query: "watchdog scratch register"
+        results:
+          - page: 130
+            text: "If watchdog scratch registers set to indicate pre-loaded code exists in SRAM, jump to that code"
+          - page: 546
+            text: "The bootrom checks the watchdog scratch registers for a magic number on boot"

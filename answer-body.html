@@ -11,6 +11,38 @@
     <h2>References</h2>
     {% for ref in all_references %}
     <div class="ref-card">
+      {% if ref.kind == "search_result" and ref.mode == "regex" %}
+      <div>
+        <span class="num">[{{ ref.num }}]</span>
+        <span class="meta">enumeration over <a href="{{ ref.pdf_url }}">{{ ref.source_name }}</a></span>
+      </div>
+      <blockquote>pattern: <code>{{ ref.query }}</code></blockquote>
+      {% if ref.results %}
+      <p class="match-count">{{ ref.results | length }} distinct match{{ "es" if ref.results | length != 1 else "" }}</p>
+      <ul class="search-results">
+        {% for r in ref.results %}
+        <li><a href="{{ ref.pdf_url }}#page={{ r.page }}">p.{{ r.page }}</a> &mdash; <code>{{ r.match }}</code> &mdash; &ldquo;{{ r.text }}&rdquo;</li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <p class="no-results">No matches found.</p>
+      {% endif %}
+      {% elif ref.kind == "search_result" %}
+      <div>
+        <span class="num">[{{ ref.num }}]</span>
+        <span class="meta">search of <a href="{{ ref.pdf_url }}">{{ ref.source_name }}</a></span>
+      </div>
+      <blockquote>query: &ldquo;{{ ref.query }}&rdquo;</blockquote>
+      {% if ref.results %}
+      <ul class="search-results">
+        {% for r in ref.results %}
+        <li><a href="{{ ref.pdf_url }}#page={{ r.page }}">p.{{ r.page }}</a> &mdash; &ldquo;{{ r.text }}&rdquo;</li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <p class="no-results">No results found.</p>
+      {% endif %}
+      {% else %}
       <div>
         <span class="num">[{{ ref.num }}]</span>
         <span class="meta">
@@ -27,6 +59,7 @@
           <canvas></canvas>
         </div>
       </details>
+      {% endif %}
     </div>
     {% endfor %}
   </section>

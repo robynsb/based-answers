@@ -1,0 +1,21 @@
+question: "How many distinct ADC input pin labels appear in the RP2040 pinout table?"
+answers:
+  - claim: "The RP2040 pinout table lists exactly four ADC input pin labels: ADC0, ADC1, ADC2, and ADC3"
+    citations:
+      - type: search_result
+        mode: regex
+        source: "RP-008371-DS-1-rp2040-datasheet.pdf"
+        query: "ADC[0-9]"
+        results:
+          - match: "ADC0"
+            page: 614
+            text: "GPIO26 / ADC0"
+          - match: "ADC1"
+            page: 614
+            text: "GPIO27 / ADC1"
+          - match: "ADC2"
+            page: 614
+            text: "GPIO28 / ADC2"
+          - match: "ADC3"
+            page: 614
+            text: "GPIO29 / ADC3"

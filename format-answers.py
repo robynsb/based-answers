@@ -161,6 +161,11 @@ def merge_citations(flat: list[dict], paras: list[frozenset[int]]) -> tuple[list
             for j in roots[x + 1:]:
                 if find(j) != j:
                     continue
+                # search_result citations have no single page/quote to fuzzy-merge
+                # against (that's what _try_merge_texts is for); they're deduped
+                # separately by exact (source, query, results) equality instead.
+                if flat[i].get("type") == "search_result" or flat[j].get("type") == "search_result":
+                    continue
                 if flat[i]["source"] != flat[j]["source"] or flat[i]["page"] != flat[j]["page"]:
                     continue
                 merged = _try_merge_texts(texts[i], texts[j], bool(paras[i] & paras[j]))
@@ -320,11 +325,23 @@ def build_context(yaml_path: Path, pdf_url_for=None) -> dict:
         idxs = []
         for cit in answer.get("citations", []):
             idxs.append(len(flat))
-            flat.append({
-                "text": cit.get("text", "").strip(),
-                "page": cit.get("page", 0),
-                "source": cit.get("source", ""),
-            })
+            if cit.get("type") == "search_result":
+                flat.append({
+                    "type": "search_result",
+                    "mode": cit.get("mode") or "literal",
+                    "text": "",
+                    "page": None,
+                    "source": cit.get("source", ""),
+                    "query": cit.get("query", ""),
+                    "results": cit.get("results") or [],
+                })
+            else:
+                flat.append({
+                    "type": "citation",
+                    "text": cit.get("text", "").strip(),
+                    "page": cit.get("page", 0),
+                    "source": cit.get("source", ""),
+                })
         claim_cits.append((claim, idxs))
 
     caches = {c["source"]: load_cache(c["source"], yaml_dir) for c in flat}
@@ -333,16 +350,31 @@ def build_context(yaml_path: Path, pdf_url_for=None) -> dict:
     paras = [paragraph_ids(caches[c["source"]], c["page"], c["text"]) for c in flat]
     root_of, merged_texts = merge_citations(flat, paras)
 
+    # Exact-match dedup for identical search_result citations across claims:
+    # merge_citations only fuzzy-merges quote text (meaningless for these),
+    # so two claims citing the same (source, query, results) collapse here
+    # into one shared reference instead of one card each.
+    sr_key_to_root: dict[tuple, int] = {}
+    for i, c in enumerate(flat):
+        if c.get("type") != "search_result":
+            continue
+        if c["mode"] == "regex":
+            result_key = tuple(sorted((r.get("match", ""), r.get("page")) for r in c["results"]))
+        else:
+            result_key = tuple(sorted((r.get("page"), r.get("text", "")) for r in c["results"]))
+        key = (c["mode"], c["source"], c["query"], result_key)
+        if key in sr_key_to_root:
+            root_of[i] = sr_key_to_root[key]
+        else:
+            sr_key_to_root[key] = root_of[i]
+
     ref_num = {}  # root -> reference number, in order of first appearance
     for root in root_of:
         if root not in ref_num:
             ref_num[root] = len(ref_num) + 1
 
     for root, num in sorted(ref_num.items(), key=lambda kv: kv[1]):
-        text = merged_texts[root]
-        page = flat[root]["page"]
         source_name = flat[root]["source"]
-        member_texts = [flat[i]["text"] for i in range(len(flat)) if root_of[i] == root]
 
         source_path = get_source_abs_path(source_name, yaml_dir)
         if source_path is None:
@@ -355,6 +387,23 @@ def build_context(yaml_path: Path, pdf_url_for=None) -> dict:
             pdf_url = pdf_url_for(source_name, source_path)
         else:
             pdf_url = f"file://{source_path}"
+
+        if flat[root].get("type") == "search_result":
+            all_refs.append({
+                "num": num,
+                "kind": "search_result",
+                "mode": flat[root]["mode"],
+                "query": flat[root]["query"],
+                "results": flat[root]["results"],
+                "source_name": source_name,
+                "source_path": source_path,
+                "pdf_url": pdf_url,
+            })
+            continue
+
+        text = merged_texts[root]
+        page = flat[root]["page"]
+        member_texts = [flat[i]["text"] for i in range(len(flat)) if root_of[i] == root]
 
         cache = caches.get(source_name)
 
@@ -389,6 +438,7 @@ def build_context(yaml_path: Path, pdf_url_for=None) -> dict:
 
         all_refs.append({
             "num": num,
+            "kind": "citation",
             "text": text,
             "page": page,
             "source_name": source_name,
@@ -411,7 +461,10 @@ def build_context(yaml_path: Path, pdf_url_for=None) -> dict:
         links = []
         for n in nums:
             ref = all_refs[n - 1]
-            links.append(f'<a href="{ref["pdf_url"]}#page={ref["page"]}">{n}</a>')
+            if ref.get("kind") == "search_result":
+                links.append(f'<a href="{ref["pdf_url"]}">{n}</a>')
+            else:
+                links.append(f'<a href="{ref["pdf_url"]}#page={ref["page"]}">{n}</a>')
         sup = f"<sup>{','.join(links)}</sup>" if links else ""
         concat_parts.append(f"{claim}{sup}")
 
