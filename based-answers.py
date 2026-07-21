@@ -897,7 +897,7 @@ def index_pdfs(pdf_paths: list[Path]) -> list[dict]:
                 elif "tokens:" in line.lower():
                     info["tokens"] = line.split(":", 1)[1].strip()
         pdf_info.append(info)
-        print(f"  {info['file']}: {info['pages']} pages, {info['chunks']} chunks, ~{info['tokens']}K tokens")
+        print(f"  {info['file']}: {info['pages']} pages, {info['chunks']} chunks, ~{info['tokens']} tokens")
     return pdf_info
 
 
