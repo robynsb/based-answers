@@ -69,10 +69,10 @@ class TestWriteContextFeedback(unittest.TestCase):
                 text = path.read_text()
             finally:
                 os.chdir(old)
-        self.assertEqual(text.count("### Round 1"), 1)
-        self.assertEqual(text.count("### Round 2"), 1)
-        self.assertNotIn("### Round 3", text)
-        round1_block = text.split("### Round 1")[1].split("### Round 2")[0]
+        self.assertEqual(text.count("## Round 1"), 1)
+        self.assertEqual(text.count("## Round 2"), 1)
+        self.assertNotIn("## Round 3", text)
+        round1_block = text.split("## Round 1")[1].split("## Round 2")[0]
         self.assertIn("claim: A", round1_block)
         self.assertIn("claim: B", round1_block)
 

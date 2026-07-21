@@ -509,12 +509,10 @@ def relevant_answer_files(question: str, slug: str, limit: int = 10) -> list[tup
 def write_context(slug: str, question: str, pdf_info: list[dict], rounds: list[dict]) -> Path:
     path = Path("answers") / f"{slug}-context.md"
     lines = [
-        "# Citation-Grounded QA Pipeline",
-        "",
-        "## Question",
+        "# Question",
         question,
         "",
-        "## PDF Sources",
+        "# PDF Sources",
     ]
     # Bare filenames: the tools run in this working directory, so the name is
     # the whole path the agent needs for `pdf`
@@ -523,20 +521,20 @@ def write_context(slug: str, question: str, pdf_info: list[dict], rounds: list[d
 
     related = relevant_answer_files(question, slug)
     if related:
-        lines += ["", "## Related Past Answers (read only those clearly relevant to this question)"]
+        lines += ["", "# Related Past Answers (read only those clearly relevant to this question)"]
         for name, past_question in related:
             lines.append(f'- {name} — "{past_question}"')
 
     lines += [
         "",
-        "## Prior Attempts & Feedback",
+        "# Prior Attempts & Feedback",
     ]
 
     if not rounds:
         lines.append("None yet. This is your first attempt.")
     else:
         for rnd, feedbacks in group_feedback_by_round(rounds):
-            lines += ["", f"### Round {rnd}"]
+            lines += ["", f"## Round {rnd}"]
             for fb in feedbacks:
                 lines += ["```", fb, "```"]
 
