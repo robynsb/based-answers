@@ -478,6 +478,9 @@ def main():
                              "(default: current working directory)")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="Show match methods, closest-match hints, and detailed diffs")
+    parser.add_argument("--show-passes", action="store_true",
+                        help="List passing citations too (default: failures and the summary "
+                             "only — a passing row tells the agent nothing it must act on)")
     parser.add_argument("--format", choices=["table", "json", "summary"],
                         default="table", help="Output format")
 
@@ -491,9 +494,16 @@ def main():
 
     print(f"Question: {data.get('question', '(none)')}\n")
 
-    if args.format == "table":
+    # Printed lazily, so an all-passing run is just the question and the summary
+    header_printed = False
+
+    def print_header():
+        nonlocal header_printed
+        if header_printed:
+            return
         print(f"{'Claim':<60} {'Citation':<50} {'Page':<6} {'Result':<10}")
         print("-" * 130)
+        header_printed = True
 
     for answer in data.get("answers", []):
         claim = answer.get("claim", "")
@@ -542,7 +552,8 @@ def main():
             short_claim = claim[:58] + ".." if len(claim) > 58 else claim
             short_cit = cit_text[:48] + ".." if len(cit_text) > 48 else cit_text
 
-            if args.format == "table":
+            if args.format == "table" and (status == "FAIL" or args.show_passes):
+                print_header()
                 extra = f" ({reason})" if status == "FAIL" else ""
                 print(f"{short_claim:<60} {short_cit:<50} {page:<6} {status:<10}{extra}")
                 if args.verbose and status == "FAIL" and result and result.get("suggestions"):
@@ -560,7 +571,8 @@ def main():
                 })
 
     if args.format == "table":
-        print(f"\n{'=' * 130}")
+        if header_printed:
+            print(f"\n{'=' * 130}")
         print(f"Total: {total}  |  Passed: {passed}  |  Failed: {failed}")
 
     if args.format == "json":
