@@ -414,12 +414,6 @@ Respond with:
     return {"passed": passed, "output": result[:2000]}
 
 
-def _agent_instructions() -> str:
-    text = AGENT_SRC.read_text()
-    parts = text.split("---", 2)
-    return parts[2].strip() if len(parts) > 2 else text
-
-
 def group_feedback_by_round(rounds: list[dict]) -> list[tuple[int, list[str]]]:
     """Group failure entries by the round they occurred in — a round can fail
     several checks (e.g. one semantic failure per claim), and each is its own
@@ -443,32 +437,86 @@ def build_feedback_message(round_num: int, rounds: list[dict]) -> str:
     return "\n".join(msg_lines)
 
 
+# Dropped when scoring question overlap: too common to say anything about topic
+STOPWORDS = {
+    "a", "an", "and", "any", "are", "as", "at", "be", "been", "but", "by", "can",
+    "do", "does", "for", "from", "has", "have", "how", "i", "if", "in", "is",
+    "it", "its", "me", "my", "not", "of", "on", "or", "should", "so", "some",
+    "that", "the", "their", "them", "then", "there", "they", "this", "to", "was",
+    "way", "we", "what", "when", "which", "will", "with", "would", "you", "your",
+}
+
+
+def content_words(text: str) -> set[str]:
+    return {w for w in re.findall(r"[a-z0-9_]+", text.lower()) if w not in STOPWORDS}
+
+
+def relevant_answer_files(question: str, slug: str, limit: int = 10) -> list[tuple[str, str]]:
+    """Past answer files worth reading for this question, best first.
+
+    Listing every answers/*.yml grows without bound — and re-asks pile up as -N
+    duplicates of one question — so rank by content-word overlap and keep the
+    top `limit`. Returns [(filename, that file's question), ...]; the agent gets
+    one line each instead of being told to read them all.
+    """
+    try:
+        import yaml as pyyaml
+    except ImportError:
+        return []
+
+    wanted = content_words(question)
+    if not wanted:
+        return []
+
+    # One entry per distinct question, newest file wins — collapses -N re-asks
+    by_question: dict[str, tuple[float, str, str]] = {}
+    for path in Path("answers").glob("*.yml"):
+        if path.stem == slug:
+            continue
+        try:
+            data = pyyaml.safe_load(path.read_text())
+            past = (data or {}).get("question", "")
+        except Exception:
+            continue
+        if not past:
+            continue
+        key = " ".join(re.findall(r"[a-z0-9_]+", past.lower()))
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            continue
+        if key not in by_question or mtime > by_question[key][0]:
+            by_question[key] = (mtime, path.name, past)
+
+    scored = [(len(wanted & content_words(past)), name, past)
+              for _, name, past in by_question.values()]
+    scored = [s for s in scored if s[0]]
+    scored.sort(key=lambda s: (-s[0], s[1]))
+    return [(name, past) for _, name, past in scored[:limit]]
+
+
 def write_context(slug: str, question: str, pdf_info: list[dict], rounds: list[dict]) -> Path:
     path = Path("answers") / f"{slug}-context.md"
     lines = [
         "# Citation-Grounded QA Pipeline",
         "",
-        f"## Question",
-        f"{question}",
+        "## Question",
+        question,
         "",
-        f"## PDF Sources",
+        "## PDF Sources",
     ]
+    # Bare filenames: the tools run in this working directory, so the name is
+    # the whole path the agent needs for `pdf`
     for info in pdf_info:
-        lines.append(f"- {info['file']} (pages: {info['pages']}, chunks: {info['chunks']}, ~{info['tokens']}K tokens)")
-        lines.append(f"  Full path: {info['abspath']}")
+        lines.append(f"- {info['file']} ({info['pages']} pages)")
 
-    # List existing answer files the agent can reuse
-    existing = sorted(Path("answers").glob("*.yml"))
-    if existing:
-        lines += ["", "## Existing Answer Files (read with `read` tool to reuse claims)"]
-        for f in existing:
-            lines.append(f"- {f.name}")
+    related = relevant_answer_files(question, slug)
+    if related:
+        lines += ["", "## Related Past Answers (read only those clearly relevant to this question)"]
+        for name, past_question in related:
+            lines.append(f'- {name} — "{past_question}"')
 
     lines += [
-        "",
-        "## Instructions",
-        "",
-        _agent_instructions(),
         "",
         "## Prior Attempts & Feedback",
     ]
