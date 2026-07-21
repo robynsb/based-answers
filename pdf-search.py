@@ -259,7 +259,7 @@ def find_matches(data: dict, query: str, context_chars: int = 300) -> list[dict]
     return matches
 
 
-def find_distinct_matches(data: dict, pattern: str, context_chars: int = 300,
+def find_distinct_matches(data: dict, pattern: str, context_chars: int = 150,
                           max_matches: int = 100) -> dict:
     """Enumerate every distinct string a regex matches anywhere in the doc —
     for search_result citations proving absence/exhaustiveness across a
@@ -271,7 +271,10 @@ def find_distinct_matches(data: dict, pattern: str, context_chars: int = 300,
     snippet by re-normalizing that snippet the same way (see
     verify-citations.py's check_search_result). Deduplicates by the exact
     matched substring, keeping the first chunk/page it's seen on for its
-    example snippet.
+    example snippet. Snippets are shorter than a normal search's: an
+    enumeration can run to 100 matches, and each snippet is copied into the
+    answer YAML and quoted back to the semantic checker, so only enough
+    context to place the match is worth carrying.
 
     Returns {"matches": [{"match", "page", "snippet"}, ...]} on success, or
     {"error": "invalid_pattern", "detail": ...} / {"error": "too_broad",
@@ -307,7 +310,7 @@ def find_distinct_matches(data: dict, pattern: str, context_chars: int = 300,
     return {"matches": list(seen.values())}
 
 
-def cmd_search_regex(data: dict, pattern: str, context_chars: int = 300, max_matches: int = 100):
+def cmd_search_regex(data: dict, pattern: str, context_chars: int = 150, max_matches: int = 100):
     result = find_distinct_matches(data, pattern, context_chars=context_chars, max_matches=max_matches)
     if "error" in result:
         if result["error"] == "invalid_pattern":
@@ -372,7 +375,7 @@ def make_parser():
     search_regex_p = sub.add_parser(
         "search-regex", help="Enumerate every distinct match of a regex pattern")
     search_regex_p.add_argument("pattern", help="Regex pattern (matched case-insensitively)")
-    search_regex_p.add_argument("--context-chars", type=int, default=300)
+    search_regex_p.add_argument("--context-chars", type=int, default=150)
     search_regex_p.add_argument("--max-matches", type=int, default=100)
 
     get_p = sub.add_parser("get", help="Get full page text")
