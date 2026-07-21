@@ -226,7 +226,6 @@ def run_search_agent(prompt_path: Path | None, question: str, session_id: str | 
 
 def run_deterministic(yaml_path: Path, pdf_dir: str = ".") -> dict:
     cmd = [
-        "nix", "develop", f"path:{SKILL_DIR}", "-c",
         sys.executable, str(SKILL_DIR / "verify-citations.py"),
         "--pdf-dir", pdf_dir,
         "-v", str(yaml_path),
@@ -891,7 +890,6 @@ def index_pdfs(pdf_paths: list[Path]) -> list[dict]:
         else:
             print(f"Indexing: {pdf_path.name}")
             cmd = [
-                "nix", "develop", f"path:{SKILL_DIR}", "-c",
                 sys.executable, str(SKILL_DIR / "pdf-search.py"),
                 str(pdf_path), "info",
             ]
