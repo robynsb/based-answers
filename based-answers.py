@@ -617,17 +617,25 @@ def install_banner(label: str):
 def install_tools():
     TOOLS_DIR.mkdir(parents=True, exist_ok=True)
 
+    # This process is already running inside the flake dev shell, so sys.executable
+    # is the flake's python3 (with pymupdf/pyyaml). Bake that resolved interpreter
+    # into the generated wrappers so each tool call runs the script directly,
+    # instead of paying a fresh `nix develop` flake evaluation on every invocation.
+    python = sys.executable
+
     pdf_search_ts = TOOLS_DIR / "pdf-search.ts"
     verify_citations_ts = TOOLS_DIR / "verify-citations.ts"
     pdf_search_ts.write_text(f"""import {{ tool }} from "@opencode-ai/plugin"
-import {{ execSync }} from "child_process"
+import {{ execFileSync }} from "child_process"
 
+const PYTHON = {json.dumps(python)}
 const SKILL_DIR = {json.dumps(str(SKILL_DIR))}
 
-function run(args: string): string {{
+function run(args: string[]): string {{
   try {{
-    return execSync(
-      `nix develop "path:${{SKILL_DIR}}" -c python3 ${{SKILL_DIR}}/pdf-search.py ${{args}}`,
+    return execFileSync(
+      PYTHON,
+      [`${{SKILL_DIR}}/pdf-search.py`, ...args],
       {{ timeout: 60000, encoding: "utf-8" }}
     ).trim()
   }} catch (e: any) {{
@@ -650,19 +658,19 @@ export default tool({{
   }},
   async execute(args) {{
     if (args.action === "info") {{
-      return run(`${{JSON.stringify(args.pdf)}} info`)
+      return run([args.pdf, "info"])
     }}
     if (args.action === "search") {{
       if (!args.query) return "Error: query is required for search"
-      return run(`${{JSON.stringify(args.pdf)}} search ${{JSON.stringify(args.query)}} --limit ${{args.limit ?? 10}}`)
+      return run([args.pdf, "search", args.query, "--limit", String(args.limit ?? 10)])
     }}
     if (args.action === "search_regex") {{
       if (!args.pattern) return "Error: pattern is required for search_regex"
-      return run(`${{JSON.stringify(args.pdf)}} search-regex ${{JSON.stringify(args.pattern)}}`)
+      return run([args.pdf, "search-regex", args.pattern])
     }}
     if (args.action === "get") {{
       if (!args.pages || args.pages.length === 0) return "Error: page numbers required for get"
-      return run(`${{JSON.stringify(args.pdf)}} get ${{args.pages.join(" ")}}`)
+      return run([args.pdf, "get", ...args.pages.map(String)])
     }}
     return `Error: unknown action ${{args.action}}`
   }},
@@ -670,8 +678,9 @@ export default tool({{
 """)
 
     verify_citations_ts.write_text(f"""import {{ tool }} from "@opencode-ai/plugin"
-import {{ execSync }} from "child_process"
+import {{ execFileSync }} from "child_process"
 
+const PYTHON = {json.dumps(python)}
 const SKILL_DIR = {json.dumps(str(SKILL_DIR))}
 
 export default tool({{
@@ -683,8 +692,9 @@ export default tool({{
   async execute(args) {{
     const pdfDir = args.pdf_dir ?? "."
     try {{
-      const result = execSync(
-        `nix develop "path:${{SKILL_DIR}}" -c python3 ${{SKILL_DIR}}/verify-citations.py --pdf-dir ${{JSON.stringify(pdfDir)}} ${{JSON.stringify(args.yaml)}}`,
+      const result = execFileSync(
+        PYTHON,
+        [`${{SKILL_DIR}}/verify-citations.py`, "--pdf-dir", pdfDir, args.yaml],
         {{ timeout: 60000, encoding: "utf-8" }}
       ).trim()
       return result
