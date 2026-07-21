@@ -2,6 +2,7 @@
 previously asked questions. Exercises indexing, deterministic verification,
 answer-context building, and serving through the web app."""
 
+import json
 import os
 import shutil
 import subprocess
@@ -18,6 +19,7 @@ PDF_NAME = "RP-008371-DS-1-rp2040-datasheet.pdf"
 pdf_search = load_script("pdf-search.py")
 format_answers = load_script("format-answers.py")
 live_server = load_script("live-server.py")
+based_answers = load_script("based-answers.py")
 
 
 class TestEndToEnd(unittest.TestCase):
@@ -162,6 +164,37 @@ class TestEndToEnd(unittest.TestCase):
 
         events = server.events_after(run_id, 0)
         self.assertEqual([e["event"] for e in events], ["answer", "phase"])
+
+    def test_watcher_streams_the_draft_through_the_real_render_path(self):
+        """A write landing while the searcher is still running reaches the run's
+        event stream as a fully rendered answer fragment."""
+        server = live_server.PipelineServer(
+            db_path=str(self.work / "citation-qa-watch.db"),
+            max_rounds=5,
+            build_context=format_answers.build_context,
+        )
+        server.register_pdf(self.work / PDF_NAME)
+        slug = "watched-draft"
+        run_id = server.create_run("Watched draft?", slug)
+        source = self.work / "answers" / "rp2040-pull-blocking-detection.yml"
+        target = self.work / "answers" / f"{slug}.yml"
+        target.write_text("question: q\nanswers: []\n")  # previous round's leftover
+
+        old_server = based_answers.SERVER
+        based_answers.SERVER = server
+        try:
+            watcher = based_answers.AnswerWatcher(slug, run_id)
+            self.assertFalse(watcher.poll(), "leftover file must not be re-emitted")
+            target.write_text(source.read_text())  # the agent's write_answer call
+            self.assertTrue(watcher.poll())
+            self.assertFalse(watcher.poll(), "unchanged file must not re-emit")
+        finally:
+            based_answers.SERVER = old_server
+            target.unlink()
+
+        events = server.events_after(run_id, 0)
+        self.assertEqual([e["event"] for e in events], ["answer"])
+        self.assertIn("ref-card", json.loads(events[0]["data"])["html"])
 
 
 if __name__ == "__main__":

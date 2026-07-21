@@ -42,6 +42,8 @@ CHECKER_SRC = SKILL_DIR / f"{CHECKER_NAME}.md"
 CHECKER_DST = Path.home() / ".config/opencode/agents" / f"{CHECKER_NAME}.md"
 TOOLS_DIR = Path.home() / ".config/opencode/tools"
 MAX_ROUNDS = 5
+# How often the draft answer file is checked for a rewrite while the agent runs
+ANSWER_POLL_SECONDS = 0.7
 
 # Per-agent stream colors so interleaved opencode output is tellable apart
 SEARCH_COLOR = "\033[36m"     # cyan: citation-searcher
@@ -87,14 +89,19 @@ def emit_line(run_id: str | None, agent: str, line: str, extra: dict | None = No
     emit(run_id, "agent-line", data)
 
 
-def emit_answer(run_id: str | None, yaml_path: Path):
+def emit_answer(run_id: str | None, yaml_path: Path) -> str | None:
+    """Render the answer YAML and push it to the browser. Returns the emitted
+    HTML, or None if nothing was emitted (no server, or the file did not
+    render — e.g. a half-written YAML caught mid-write)."""
     if SERVER is None or not run_id:
-        return
+        return None
     try:
         html = SERVER.render_answer_fragment(yaml_path)
-        emit(run_id, "answer", {"html": html})
     except Exception as e:
         print(f"  [answer render error] {e}", file=sys.stderr)
+        return None
+    emit(run_id, "answer", {"html": html})
+    return html
 
 
 def run_tag(run_id: str | None) -> str:
@@ -154,7 +161,7 @@ def get_new_session_id(before_ids: set[str], run_id: str) -> str | None:
 
 def run_search_agent(prompt_path: Path | None, question: str, session_id: str | None = None,
                      message: str | None = None, timeout: int = 600,
-                     run_id: str | None = None) -> int:
+                     run_id: str | None = None, watcher=None) -> int:
     cmd = ["opencode", "run", "--agent", AGENT_NAME]
     slug = run_id or derive_slug(question)
 
@@ -183,17 +190,30 @@ def run_search_agent(prompt_path: Path | None, question: str, session_id: str | 
     env = {**os.environ, "ANSWER_SLUG": slug}
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, env=env)
 
-    denied = 0
-    for line in iter(proc.stdout.readline, ""):
-        if not line:
-            break
-        print(f"{SEARCH_COLOR}{run_tag(run_id)}{line}{RESET}", end="", flush=True)
-        emit_line(run_id, "searcher", line)
-        if "permission requested" in line.lower() or "auto-rejecting" in line.lower():
-            denied += 1
-            print(f"  \033[33m[DENIED]\033[0m {line.strip()}")
+    # The draft answer streams to the browser as the agent writes and rewrites it
+    stop_watch = threading.Event()
+    watch_thread = None
+    if watcher is not None:
+        watch_thread = threading.Thread(target=watcher.watch_until, args=(stop_watch,),
+                                        daemon=True, name=f"watch-{slug}")
+        watch_thread.start()
 
-    proc.wait(timeout=timeout)
+    denied = 0
+    try:
+        for line in iter(proc.stdout.readline, ""):
+            if not line:
+                break
+            print(f"{SEARCH_COLOR}{run_tag(run_id)}{line}{RESET}", end="", flush=True)
+            emit_line(run_id, "searcher", line)
+            if "permission requested" in line.lower() or "auto-rejecting" in line.lower():
+                denied += 1
+                print(f"  \033[33m[DENIED]\033[0m {line.strip()}")
+
+        proc.wait(timeout=timeout)
+    finally:
+        stop_watch.set()
+        if watch_thread is not None:
+            watch_thread.join(timeout=10)
 
     if denied:
         print(f"  \033[33m[{denied} permission(s) denied this round]\033[0m")
@@ -476,6 +496,61 @@ def find_yaml(slug: str) -> Path | None:
     return max(candidates, key=lambda p: p.stat().st_mtime)
 
 
+class AnswerWatcher:
+    """Pushes the draft answer to the browser while the searcher is still running.
+
+    The searcher writes answers/<slug>.yml early and then iterates on it within
+    the round (calling verify_citations itself), so waiting for the subprocess to
+    exit hides the answer for most of the round. One watcher per round: it
+    baselines the file already on disk — the previous round's leftover — so a new
+    round only shows what that round actually produced.
+    """
+
+    def __init__(self, slug: str, run_id: str | None, emit_fn=None):
+        self.slug = slug
+        self.run_id = run_id
+        self.emit_fn = emit_fn or emit_answer
+        self.emitted = False
+        self.last_text = self._read()
+
+    def _read(self) -> str | None:
+        path = find_yaml(self.slug)
+        if path is None:
+            return None
+        try:
+            return path.read_text()
+        except OSError:
+            return None
+
+    def poll(self) -> bool:
+        """Emit an `answer` event if the file changed since the last one. A
+        rewrite caught half-written fails to render and is retried next poll."""
+        path = find_yaml(self.slug)
+        if path is None:
+            return False
+        try:
+            text = path.read_text()
+        except OSError:
+            return False
+        if text == self.last_text:
+            return False
+        try:
+            html = self.emit_fn(self.run_id, path)
+        except Exception as e:  # never let UI plumbing kill a run
+            print(f"  [answer watch error] {e}", file=sys.stderr)
+            return False
+        if html is None:
+            return False
+        self.last_text = text
+        self.emitted = True
+        return True
+
+    def watch_until(self, stop_event: threading.Event, interval: float = ANSWER_POLL_SECONDS):
+        while not stop_event.wait(interval):
+            self.poll()
+        self.poll()  # catch a write that landed just before the agent exited
+
+
 def install_banner(label: str):
     print(f"\n{'#' * 60}", flush=True)
     print(f"#  {label}", flush=True)
@@ -601,9 +676,12 @@ def search_loop(slug: str, question: str, pdf_info: list[dict], rounds: list[dic
         install_banner(f"{run_tag(run_id)}{label}")
         emit(run_id, "phase", {"phase": "searching", "round": round_num})
 
+        # One watcher per round, baselined on the previous round's leftover file
+        watcher = AnswerWatcher(slug, run_id)
+
         if round_num == 1:
             ctx = write_context(slug, question, pdf_info, rounds)
-            run_search_agent(ctx, question, session_id=None, run_id=run_id)
+            run_search_agent(ctx, question, session_id=None, run_id=run_id, watcher=watcher)
             # Discover the new session ID created by this run
             for _ in range(5):
                 time.sleep(1)
@@ -615,11 +693,12 @@ def search_loop(slug: str, question: str, pdf_info: list[dict], rounds: list[dic
                 print(f"  {run_tag(run_id)}[WARN] Could not determine session ID; retries will be fresh sessions", flush=True)
         elif session_id:
             message = build_feedback_message(round_num, rounds)
-            run_search_agent(None, question, session_id=session_id, message=message, run_id=run_id)
+            run_search_agent(None, question, session_id=session_id, message=message,
+                             run_id=run_id, watcher=watcher)
         else:
             # Fallback: fresh context + fresh session (session discovery failed)
             ctx = write_context(slug, question, pdf_info, rounds)
-            run_search_agent(ctx, question, session_id=None, run_id=run_id)
+            run_search_agent(ctx, question, session_id=None, run_id=run_id, watcher=watcher)
 
         yaml_path = find_yaml(slug)
         if not yaml_path:
@@ -629,8 +708,11 @@ def search_loop(slug: str, question: str, pdf_info: list[dict], rounds: list[dic
             print(f"  {run_tag(run_id)}[FAIL] No YAML file found\n")
             continue
 
-        # Draft answer is visible while the checkers run
-        emit_answer(run_id, yaml_path)
+        # The watcher has normally already shown this round's answer; emit only
+        # if it never did (e.g. the agent left the previous round's file as-is),
+        # so the round always displays the answer the checkers are about to check
+        if not watcher.emitted:
+            emit_answer(run_id, yaml_path)
 
         # ── Deterministic verification ──
         print()

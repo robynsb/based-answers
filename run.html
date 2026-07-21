@@ -557,6 +557,12 @@ function handle(msg) {
   } else if (msg.event === "answer") {
     const cr = roundData(currentRound || 1);
     cr.answerHtml = d.html;
+    // A draft can arrive while the searcher is still iterating on it, before the
+    // deterministic phase starts — show that check pending alongside the draft
+    if (!cr.det && !terminal) {
+      cr.det = { status: "checking", output: "" };
+      if (viewing === currentRound && !$("check-det")) addDetRow(checksContainer(), cr.det);
+    }
     if (viewing === currentRound || currentRound === 0) {
       $("answer").innerHTML = d.html;
       window.renderAllPreviews?.();
