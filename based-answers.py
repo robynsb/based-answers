@@ -428,12 +428,23 @@ def group_feedback_by_round(rounds: list[dict]) -> list[tuple[int, list[str]]]:
 
 
 def build_feedback_message(round_num: int, rounds: list[dict]) -> str:
-    msg_lines = [f"Round {round_num}/{MAX_ROUNDS} — the following checks failed. "
-                 "Fix the issues and run verify_citations again."]
-    for rnd, feedbacks in group_feedback_by_round(rounds):
-        plural = "s" if len(feedbacks) != 1 else ""
-        msg_lines.append(f"\n--- Round {rnd} feedback ({len(feedbacks)} failure{plural}) ---")
-        msg_lines.extend(feedbacks)
+    """The follow-up message for the next round.
+
+    Only the failures from the round just finished: this goes to the SAME
+    opencode session, which already holds every earlier round's feedback
+    verbatim. (write_context() keeps the full history — it is written for the
+    fresh-session fallback, where nothing is remembered.)
+    """
+    grouped = group_feedback_by_round(rounds)
+    if not grouped:
+        return (f"Round {round_num}/{MAX_ROUNDS} — checks failed. "
+                "Fix the issues and run verify_citations again.")
+    rnd, feedbacks = grouped[-1]
+    plural = "s" if len(feedbacks) != 1 else ""
+    msg_lines = [f"Round {round_num}/{MAX_ROUNDS} — round {rnd} failed "
+                 f"({len(feedbacks)} failure{plural}). Fix the issues below and "
+                 "run verify_citations again."]
+    msg_lines.extend(feedbacks)
     return "\n".join(msg_lines)
 
 

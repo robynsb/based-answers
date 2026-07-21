@@ -35,16 +35,27 @@ class TestGroupFeedbackByRound(unittest.TestCase):
 
 
 class TestBuildFeedbackMessage(unittest.TestCase):
-    def test_round_headers_match_actual_rounds(self):
+    """The message goes to the session that already holds every earlier round,
+    so it carries only the failures of the round just finished."""
+
+    def test_only_the_latest_round(self):
         msg = based_answers.build_feedback_message(3, ROUNDS)
         self.assertIn(f"Round 3/{based_answers.MAX_ROUNDS}", msg)
-        self.assertIn("--- Round 1 feedback (2 failures) ---", msg)
-        self.assertIn("--- Round 2 feedback (1 failure) ---", msg)
-        self.assertNotIn("Round 3 feedback", msg)
-        # both round-1 failures sit under the single round-1 header
-        round1_block = msg.split("--- Round 1 feedback")[1].split("--- Round 2")[0]
-        self.assertIn("claim: A", round1_block)
-        self.assertIn("claim: B", round1_block)
+        self.assertIn("round 2 failed (1 failure)", msg)
+        self.assertIn("not coherent", msg)
+        # round 1 is already in the session transcript — not resent
+        self.assertNotIn("claim: A", msg)
+        self.assertNotIn("claim: B", msg)
+
+    def test_all_failures_of_that_round(self):
+        msg = based_answers.build_feedback_message(2, ROUNDS[:2])
+        self.assertIn("round 1 failed (2 failures)", msg)
+        self.assertIn("claim: A", msg)
+        self.assertIn("claim: B", msg)
+
+    def test_no_rounds_yet(self):
+        msg = based_answers.build_feedback_message(2, [])
+        self.assertIn(f"Round 2/{based_answers.MAX_ROUNDS}", msg)
 
 
 class TestWriteContextFeedback(unittest.TestCase):
