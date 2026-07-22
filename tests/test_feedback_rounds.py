@@ -58,23 +58,20 @@ class TestBuildFeedbackMessage(unittest.TestCase):
         self.assertIn(f"Round 2/{based_answers.MAX_ROUNDS}", msg)
 
 
-class TestWriteContextFeedback(unittest.TestCase):
-    def test_context_file_groups_by_round(self):
+class TestWriteContext(unittest.TestCase):
+    def test_context_file_never_carries_a_feedback_history(self):
+        """Only round 1 writes it, and later rounds send the newest feedback
+        to the same session, so there is never a history to render."""
         with tempfile.TemporaryDirectory() as tmp:
             old = os.getcwd()
             os.chdir(tmp)
             try:
                 Path("answers").mkdir()
-                path = based_answers.write_context("slug", "q?", [], ROUNDS)
-                text = path.read_text()
+                text = based_answers.write_context("slug", "q?", []).read_text()
             finally:
                 os.chdir(old)
-        self.assertEqual(text.count("## Round 1"), 1)
-        self.assertEqual(text.count("## Round 2"), 1)
-        self.assertNotIn("## Round 3", text)
-        round1_block = text.split("## Round 1")[1].split("## Round 2")[0]
-        self.assertIn("claim: A", round1_block)
-        self.assertIn("claim: B", round1_block)
+        self.assertIn("None yet. This is your first attempt.", text)
+        self.assertNotIn("## Round", text)
 
 
 if __name__ == "__main__":

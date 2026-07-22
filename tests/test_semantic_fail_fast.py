@@ -26,7 +26,7 @@ class TestSemanticFailFast(unittest.TestCase):
         given verdict per call; returns (claim indices checked, failures)."""
         calls = []
 
-        def fake_checker(rubric, **kwargs):
+        def fake_checker(rubric, ledger=None, **kwargs):
             calls.append(kwargs.get("extra", {}).get("claim"))
             return verdicts[len(calls) - 1]
 
@@ -36,7 +36,7 @@ class TestSemanticFailFast(unittest.TestCase):
             with tempfile.TemporaryDirectory() as tmp:
                 p = Path(tmp) / "a.yml"
                 p.write_text(YAML)
-                failures = based_answers.run_semantic_checkers(p)
+                failures = based_answers.run_semantic_checkers(p, based_answers.TokenLedger(None))
         finally:
             based_answers.run_checker = orig
         return calls, failures

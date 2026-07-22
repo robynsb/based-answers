@@ -523,7 +523,7 @@ class TestSemanticRubricSearchResult(unittest.TestCase):
     def _rubric_for(self, yaml_text):
         captured = {}
 
-        def fake_checker(rubric, **kwargs):
+        def fake_checker(rubric, ledger=None, **kwargs):
             captured[kwargs.get("extra", {}).get("claim")] = rubric
             return "PASS"
 
@@ -533,7 +533,7 @@ class TestSemanticRubricSearchResult(unittest.TestCase):
             with tempfile.TemporaryDirectory() as tmp:
                 p = Path(tmp) / "a.yml"
                 p.write_text(yaml_text)
-                based_answers.run_semantic_checkers(p)
+                based_answers.run_semantic_checkers(p, based_answers.TokenLedger(None))
         finally:
             based_answers.run_checker = orig
         return captured[0]

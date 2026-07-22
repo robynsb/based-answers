@@ -25,6 +25,7 @@ the browser; past runs stay viewable across server restarts.
 """
 
 import argparse
+import functools
 import importlib.util
 import json
 import os
@@ -66,7 +67,7 @@ MAX_ROUNDS = 5
 # How often the draft answer file is checked for a rewrite while the agent runs
 ANSWER_POLL_SECONDS = 0.7
 
-# Per-agent stream colors so interleaved opencode output is tellable apart
+# Per-agent stream colors so interleaved agent output is tellable apart
 SEARCH_COLOR = "\033[36m"     # cyan: citation-searcher
 SEMANTIC_COLOR = "\033[35m"   # magenta: semantic checks
 COHERENCE_COLOR = "\033[34m"  # blue: coherence check
@@ -115,42 +116,43 @@ class TokenLedger:
     replays only needs the latest `tokens` event.
     """
 
-    AGENTS = ("searcher", "semantic", "coherence")
-
     def __init__(self, run_id: str | None, emit_fn=None):
         self.run_id = run_id
         self._emit = emit_fn if emit_fn is not None else emit
         self._lock = threading.Lock()
-        self.by_agent = {a: self._zero() for a in self.AGENTS}
+        # Buckets are created on demand, so a new agent needs no roster edit.
+        self.by_agent: dict[str, dict] = {}
 
     @staticmethod
     def _zero() -> dict:
         d = {k: 0 for k in pi_rpc.USAGE_FIELDS}
-        d["total"] = 0
         d["cost"] = 0.0
         d["calls"] = 0
         return d
 
     def add(self, agent: str, usage: dict):
-        if agent not in self.by_agent:
-            return
         with self._lock:
-            bucket = self.by_agent[agent]
+            bucket = self.by_agent.setdefault(agent, self._zero())
             for k in pi_rpc.USAGE_FIELDS:
                 bucket[k] += usage.get(k, 0)
-            bucket["total"] += usage.get("total", 0)
             bucket["cost"] += usage.get("cost", 0.0)
             bucket["calls"] += 1
             payload = self.snapshot()
         self._emit(self.run_id, "tokens", payload)
 
     def snapshot(self) -> dict:
+        """`total` is derived here rather than tracked, so it cannot drift."""
+        def with_total(b):
+            out = dict(b)
+            out["total"] = sum(b[k] for k in pi_rpc.USAGE_FIELDS)
+            return out
+
         run_total = self._zero()
         for bucket in self.by_agent.values():
-            for k in list(pi_rpc.USAGE_FIELDS) + ["total", "cost", "calls"]:
+            for k in list(pi_rpc.USAGE_FIELDS) + ["cost", "calls"]:
                 run_total[k] += bucket[k]
-        return {"by_agent": {a: dict(b) for a, b in self.by_agent.items()},
-                "total": run_total}
+        return {"by_agent": {a: with_total(b) for a, b in self.by_agent.items()},
+                "total": with_total(run_total)}
 
     def observer(self, agent: str):
         """An on_event hook that records usage for `agent`."""
@@ -215,6 +217,7 @@ def derive_slug(question: str) -> str:
     return slug[:80]
 
 
+@functools.cache
 def api_key() -> str | None:
     """The DeepSeek key, from the environment or the macOS Keychain.
 
@@ -256,22 +259,71 @@ def pi_env(slug: str) -> dict:
     return env
 
 
-def open_search_session(slug: str) -> pi_rpc.PiSession:
-    """One pi process per run, holding the whole multi-round conversation."""
+def open_session(prompt_src: Path, *, slug: str = "", tools=(), extensions=(),
+                 session_dir: Path | None = None) -> pi_rpc.PiSession:
+    """The only way this app builds a pi session.
+
+    Every caller gets the run-local config dir, the configured model, and —
+    the point of routing everything through here — credentials. The key is
+    read from the Keychain, so it is absent from os.environ and a session
+    built with a hand-written env would run unauthenticated; that failed
+    silently once, because the searcher kept working while every check
+    errored out. There is now no way to construct one without it.
+    """
     return pi_rpc.PiSession(
         config_dir=PI_STATE_DIR / "pi",
-        session_dir=PI_STATE_DIR / "sessions" / slug,
-        extensions=TOOL_EXTENSIONS,
-        tools=SEARCH_TOOLS,
-        system_prompt=AGENT_SRC.read_text(),
+        session_dir=session_dir,
+        extensions=list(extensions),
+        tools=list(tools),
+        system_prompt=prompt_src.read_text(),
         model=PI_MODEL,
         env=pi_env(slug),
     )
 
 
+def open_search_session(slug: str) -> pi_rpc.PiSession:
+    """One pi process per run, holding the whole multi-round conversation."""
+    return open_session(AGENT_SRC, slug=slug, tools=SEARCH_TOOLS,
+                        extensions=TOOL_EXTENSIONS,
+                        session_dir=PI_STATE_DIR / "sessions" / slug)
+
+
+def stream_prompt(session: pi_rpc.PiSession, message: str, *, agent: str,
+                  color: str, ledger: "TokenLedger", run_id: str | None = None,
+                  extra: dict | None = None, on_extra_event=None,
+                  timeout: float = 900.0) -> str:
+    """Prompt a session, mirroring its output to stdout and the browser.
+
+    Every agent streams the same way — token deltas to stdout in the agent's
+    colour, re-assembled into whole `agent-line` events, with usage recorded
+    against that agent — so it is written once here rather than per caller.
+    Returns the assistant text, which the checkers match PASS/FAIL against.
+    """
+    chunks = []
+    buf = LineBuffer(lambda line: emit_line(run_id, agent, line, extra))
+    record_usage = ledger.observer(agent)
+
+    def on_event(ev):
+        record_usage(ev)
+        delta = pi_rpc.text_delta(ev)
+        if delta:
+            print(f"{color}{delta}{RESET if color else ''}", end="", flush=True)
+            chunks.append(delta)
+            buf.feed(delta)
+            return
+        if on_extra_event is not None:
+            on_extra_event(ev, buf)
+
+    try:
+        session.prompt(message, on_event=on_event, timeout=timeout)
+    finally:
+        buf.flush()
+    return "".join(chunks)
+
+
 def run_search_round(session: pi_rpc.PiSession, message: str, label: str,
-                     run_id: str | None = None, watcher=None,
-                     timeout: int = 900, ledger: "TokenLedger | None" = None) -> dict:
+                     ledger: "TokenLedger", run_id: str | None = None,
+                     watcher=None, timeout: int = 900) -> str:
     """Send one round's message and block until the agent has fully settled."""
     print(f"\n{'─' * 60}", flush=True)
     print(f"{run_tag(run_id)}{label} GIVEN TO {AGENT_NAME}:", flush=True)
@@ -289,27 +341,19 @@ def run_search_round(session: pi_rpc.PiSession, message: str, label: str,
                                         daemon=True, name="watch-answer")
         watch_thread.start()
 
-    buf = LineBuffer(lambda line: emit_line(run_id, "searcher", line))
-    record_usage = ledger.observer("searcher") if ledger is not None else None
-
-    def on_event(ev):
-        if record_usage is not None:
-            record_usage(ev)
-        delta = pi_rpc.text_delta(ev)
-        if delta:
-            print(f"{SEARCH_COLOR}{delta}{RESET}", end="", flush=True)
-            buf.feed(delta)
+    def tool_note(ev, buf):
+        if ev.get("type") != "tool_execution_start":
             return
-        if ev.get("type") == "tool_execution_start":
-            note = f"[tool] {ev.get('toolName')} {json.dumps(ev.get('args') or {})[:300]}"
-            print(f"{SEARCH_COLOR}{run_tag(run_id)}{note}\n{RESET}", end="", flush=True)
-            buf.flush()  # don't let a half-finished sentence merge into the note
-            emit_line(run_id, "searcher", note)
+        note = f"[tool] {ev.get('toolName')} {json.dumps(ev.get('args') or {})[:300]}"
+        print(f"{SEARCH_COLOR}{run_tag(run_id)}{note}\n{RESET}", end="", flush=True)
+        buf.flush()  # don't let a half-finished sentence merge into the note
+        emit_line(run_id, "searcher", note)
 
     try:
-        return session.prompt(message, on_event=on_event, timeout=timeout)
+        return stream_prompt(session, message, agent="searcher", color=SEARCH_COLOR,
+                             ledger=ledger, run_id=run_id, on_extra_event=tool_note,
+                             timeout=timeout)
     finally:
-        buf.flush()
         stop_watch.set()
         if watch_thread is not None:
             watch_thread.join(timeout=10)
@@ -331,10 +375,9 @@ def run_deterministic(yaml_path: Path, pdf_dir: str = ".") -> dict:
     return {"passed": result.returncode == 0, "output": output}
 
 
-def run_checker(prompt_text: str, color: str = "", timeout: int = 120,
-                agent: str = "coherence", run_id: str | None = None,
-                extra: dict | None = None,
-                ledger: "TokenLedger | None" = None) -> str:
+def run_checker(prompt_text: str, ledger: "TokenLedger", color: str = "",
+                timeout: int = 120, agent: str = "coherence",
+                run_id: str | None = None, extra: dict | None = None) -> str:
     """Judge one rubric with a fresh, tool-less pi session.
 
     Each check is independent, so it gets its own session with no tools at
@@ -344,47 +387,24 @@ def run_checker(prompt_text: str, color: str = "", timeout: int = 120,
     emit_line(run_id, agent,
               f"── PROMPT GIVEN TO {CHECKER_NAME} ──\n{prompt_text}\n{'─' * 40}\n", extra)
 
-    chunks = []
-    buf = LineBuffer(lambda line: emit_line(run_id, agent, line, extra))
-    record_usage = ledger.observer(agent) if ledger is not None else None
-
-    def on_event(ev):
-        if record_usage is not None:
-            record_usage(ev)
-        delta = pi_rpc.text_delta(ev)
-        if delta:
-            print(f"{color}{delta}{RESET if color else ''}", end="", flush=True)
-            # chunks keeps the raw stream: the PASS/FAIL verdict is matched
-            # against the joined text, independent of line framing.
-            chunks.append(delta)
-            buf.feed(delta)
-
-    session = pi_rpc.PiSession(
-        config_dir=PI_STATE_DIR / "pi",
-        extensions=[],
-        tools=[],
-        system_prompt=CHECKER_SRC.read_text(),
-        model=PI_MODEL,
-        # Must go through pi_env: the key is read from the Keychain, so it is
-        # not in os.environ and a plain dict here would leave the checker
-        # unauthenticated while the searcher worked.
-        env=pi_env(""),
-    )
+    session = open_session(CHECKER_SRC)
     try:
-        session.prompt(prompt_text, on_event=on_event, timeout=timeout)
+        return stream_prompt(session, prompt_text, agent=agent, color=color,
+                             ledger=ledger, run_id=run_id, extra=extra,
+                             timeout=timeout)
     except pi_rpc.PiError as e:
-        # A checker that cannot run must not silently read as a pass.
+        # A checker that cannot run must not silently read as a pass: an empty
+        # result contains no "FAIL" and would be taken for one.
         msg = f"\n[checker error: {e}]\n"
-        buf.feed(msg)
-        chunks.append(msg)
+        emit_line(run_id, agent, msg, extra)
+        return msg
     finally:
-        buf.flush()
         session.close()
     return "".join(chunks)
 
 
-def run_semantic_checkers(yaml_path: Path, run_id: str | None = None,
-                          ledger: "TokenLedger | None" = None) -> list[dict]:
+def run_semantic_checkers(yaml_path: Path, ledger: "TokenLedger",
+                          run_id: str | None = None) -> list[dict]:
     """Check claims in order; stops at the first failing claim so the round
     goes straight back to the search agent (later claims stay unchecked —
     they may shift anyway once the failing one is fixed)."""
@@ -486,8 +506,8 @@ Does the SYNTHESIS of all {synthesis_sources} together with PREVIOUS_CLAIMS stri
 
 Rules: direct logical inference OK. Cross-source inference OK. PREVIOUS_CLAIMS may be treated as established facts and combined with SOURCE_TEXTS. External domain knowledge = FAIL. Never use your own knowledge.
 """
-        result = run_checker(rubric, color=SEMANTIC_COLOR, agent="semantic", run_id=run_id,
-                             ledger=ledger,
+        result = run_checker(rubric, ledger, color=SEMANTIC_COLOR, agent="semantic",
+                             run_id=run_id,
                              extra={"claim": i})
         passed = "PASS" in result.upper() and "FAIL" not in result.upper()
         print(f"  {run_tag(run_id)}{'[PASS]' if passed else '[FAIL]'} Claim {i+1}: {claim[:80]}")
@@ -500,8 +520,8 @@ Rules: direct logical inference OK. Cross-source inference OK. PREVIOUS_CLAIMS m
     return failures
 
 
-def run_coherence_checker(yaml_path: Path, question: str, run_id: str | None = None,
-                          ledger: "TokenLedger | None" = None) -> dict:
+def run_coherence_checker(yaml_path: Path, question: str, ledger: "TokenLedger",
+                          run_id: str | None = None) -> dict:
     try:
         import yaml as pyyaml
         with open(yaml_path) as f:
@@ -529,8 +549,8 @@ Respond with:
 - PASS
 - FAIL: <what is missing, unclear, or doesn't make sense>
 """
-    result = run_checker(rubric, color=COHERENCE_COLOR, agent="coherence", run_id=run_id,
-                         ledger=ledger)
+    result = run_checker(rubric, ledger, color=COHERENCE_COLOR, agent="coherence",
+                         run_id=run_id)
     passed = "PASS" in result.upper() and "FAIL" not in result.upper()
     print(f"  {run_tag(run_id)}{'[PASS]' if passed else '[FAIL]'} Coherence check")
     return {"passed": passed, "output": result[:2000]}
@@ -553,9 +573,7 @@ def build_feedback_message(round_num: int, rounds: list[dict]) -> str:
     """The follow-up message for the next round.
 
     Only the failures from the round just finished: this goes to the SAME
-    opencode session, which already holds every earlier round's feedback
-    verbatim. (write_context() keeps the full history — it is written for the
-    fresh-session fallback, where nothing is remembered.)
+    pi session, which already holds every earlier round's feedback verbatim.
     """
     grouped = group_feedback_by_round(rounds)
     if not grouped:
@@ -628,7 +646,9 @@ def relevant_answer_files(question: str, slug: str, limit: int = 10) -> list[tup
     return [(name, past) for _, name, past in scored[:limit]]
 
 
-def write_context(slug: str, question: str, pdf_info: list[dict], rounds: list[dict]) -> Path:
+def write_context(slug: str, question: str, pdf_info: list[dict]) -> Path:
+    """The round-1 context file. Later rounds send only the newest feedback to
+    the same session, so this never carries a feedback history."""
     path = Path("answers") / f"{slug}-context.md"
     lines = [
         "# Question",
@@ -650,15 +670,8 @@ def write_context(slug: str, question: str, pdf_info: list[dict], rounds: list[d
     lines += [
         "",
         "# Prior Attempts & Feedback",
+        "None yet. This is your first attempt.",
     ]
-
-    if not rounds:
-        lines.append("None yet. This is your first attempt.")
-    else:
-        for rnd, feedbacks in group_feedback_by_round(rounds):
-            lines += ["", f"## Round {rnd}"]
-            for fb in feedbacks:
-                lines += ["```", fb, "```"]
 
     path.write_text("\n".join(lines) + "\n")
     return path
@@ -767,15 +780,15 @@ def _search_rounds(session, slug: str, question: str, pdf_info: list[dict],
         # Round 1 sends the full context; later rounds send only the round
         # just finished, because the session still holds every earlier one.
         if round_num == 1:
-            message = write_context(slug, question, pdf_info, rounds).read_text()
+            message = write_context(slug, question, pdf_info).read_text()
             what = "CONTEXT"
         else:
             message = build_feedback_message(round_num, rounds)
             what = "FEEDBACK"
 
         try:
-            run_search_round(session, message, what, run_id=run_id, watcher=watcher,
-                             ledger=ledger)
+            run_search_round(session, message, what, ledger, run_id=run_id,
+                             watcher=watcher)
         except pi_rpc.PiError as e:
             print(f"  {run_tag(run_id)}[FAIL] search agent: {e}\n")
             feedback = f"The search agent did not complete: {e}"
@@ -814,7 +827,7 @@ def _search_rounds(session, slug: str, question: str, pdf_info: list[dict],
 
         # ── Semantic checkers ──
         emit(run_id, "phase", {"phase": "semantic", "round": round_num})
-        semantic_failures = run_semantic_checkers(yaml_path, run_id=run_id, ledger=ledger)
+        semantic_failures = run_semantic_checkers(yaml_path, ledger, run_id=run_id)
         if semantic_failures:
             sf = semantic_failures[0]
             feedback = (f"Semantic checker FAILED for claim: {sf['claim']}\n"
@@ -827,7 +840,7 @@ def _search_rounds(session, slug: str, question: str, pdf_info: list[dict],
 
         # ── Coherence checker ──
         emit(run_id, "phase", {"phase": "coherence", "round": round_num})
-        coherence = run_coherence_checker(yaml_path, question, run_id=run_id, ledger=ledger)
+        coherence = run_coherence_checker(yaml_path, question, ledger, run_id=run_id)
         emit(run_id, "check-result",
              {"check": "coherence", "passed": coherence["passed"], "output": coherence["output"][:2000]})
         if not coherence["passed"]:

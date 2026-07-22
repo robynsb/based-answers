@@ -14,17 +14,24 @@ import tempfile
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from . import support  # noqa: F401  (puts SKILL_DIR on sys.path)
 import pi_rpc  # noqa: E402
 
 
-def make_fake_pi(script_body: str) -> str:
-    """Write an executable fake `pi` and return its path."""
+def make_fake_pi(script_body: str, version: str | None = "0.79.1") -> str:
+    """Write an executable fake `pi` and return its path.
+
+    `version` is what it reports to `--version`, which is how PiSession
+    decides whether to expect an `agent_settled` event: 0.79 has none, 0.80+
+    does, and None (unparseable) falls back to the grace period.
+    """
     d = tempfile.mkdtemp()
     path = os.path.join(d, "fake-pi")
     with open(path, "w") as f:
         f.write(f"#!{sys.executable}\n")
         f.write("import json, sys\n")
+        f.write("if '--version' in sys.argv:\n")
+        f.write(f"    print({(version or 'unknown')!r}); sys.exit(0)\n")
         f.write("def emit(o):\n")
         f.write("    sys.stdout.write(json.dumps(o) + '\\n')\n")
         f.write("    sys.stdout.flush()\n")
@@ -36,7 +43,7 @@ def make_fake_pi(script_body: str) -> str:
     return path
 
 
-def session(fake: str, **kw) -> pi_rpc.PiSession:
+def session(fake: str, **kw) -> pi_rpc.PiSession:  # noqa: D103
     tmp = tempfile.mkdtemp()
     return pi_rpc.PiSession(
         cwd=tmp,
@@ -92,7 +99,6 @@ class TestPromptLifecycle(unittest.TestCase):
         )
         with session(fake) as s:
             out = s.prompt("hello", timeout=30)
-        self.assertTrue(out["accepted"])
         self.assertTrue(out["settled"])
 
     def test_agent_end_alone_does_not_end_the_round(self):
@@ -133,8 +139,9 @@ class TestPromptLifecycle(unittest.TestCase):
             "emit({'type': 'agent_start'})\n"          # resumed within the grace
             "time.sleep(4)\n"
             "emit({'type': 'late', 'n': 1})\n"
-            "emit({'type': 'agent_end', 'messages': []})\n"
-            "time.sleep(20)\n"
+            "emit({'type': 'agent_end', 'willRetry': False})\n"
+            "emit({'type': 'agent_settled'})\n",
+            version="0.81.1",
         )
         seen = []
         with session(fake) as s:
@@ -274,18 +281,6 @@ class TestEventHelpers(unittest.TestCase):
         self.assertEqual(pi_rpc.text_delta(
             {"type": "message_update",
              "assistantMessageEvent": {"type": "text_delta", "delta": "x"}}), "x")
-
-    def test_tool_finished_matches_by_name(self):
-        ev = {"type": "tool_execution_end", "toolName": "write_answer",
-              "result": {"content": [{"type": "text", "text": "answers/q.yml"}]}}
-        self.assertIsNone(pi_rpc.tool_finished(ev, "pdf_search"))
-        self.assertEqual(
-            pi_rpc.tool_finished(ev, "write_answer")["content"][0]["text"],
-            "answers/q.yml")
-
-    def test_tool_finished_ignores_start_events(self):
-        ev = {"type": "tool_execution_start", "toolName": "write_answer"}
-        self.assertIsNone(pi_rpc.tool_finished(ev, "write_answer"))
 
 
 class TestIsolation(unittest.TestCase):

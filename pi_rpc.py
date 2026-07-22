@@ -12,9 +12,11 @@ bytes and split on b"\\n" — Python's text-mode universal newlines would also
 split on a bare CR.
 """
 
+import functools
 import json
 import os
 import queue
+import re
 import subprocess
 import threading
 import time
@@ -26,22 +28,43 @@ class PiError(RuntimeError):
     pass
 
 
-# How a round ends depends on the pi version, so both are handled.
+# How a round ends depends on the pi version.
 #
 # pi >= 0.80 emits `agent_settled` once it will not continue automatically —
 # the exact boundary this pipeline wants. pi 0.79 (the version in nixpkgs)
 # has no such event: there, `agent_end` is itself terminal.
 #
-# So `agent_end` arms a settle a moment in the future rather than ending the
-# round outright. On a newer pi the `agent_settled` that follows wins the
-# race and ends the round immediately; on 0.79 nothing follows and the grace
-# expires. Any sign that pi resumed work disarms it, so an automatic retry or
-# a queued continuation is still waited out on both versions.
+# The version is resolved once per process rather than re-discovered by
+# racing a timer on every prompt: on a pi that emits `agent_settled` the
+# round ends strictly on that event, and on one that does not it ends on
+# `agent_end`. Waiting out a grace period on every prompt would otherwise
+# cost seconds per round on exactly the version we ship.
+_SETTLE_EVENT_MIN_VERSION = (0, 80)
+# Only used when the version cannot be determined: behave like the old pi and
+# give a possible `agent_settled` a moment to arrive before calling it done.
 _SETTLE_GRACE = 2.0
 _WORK_RESUMED = frozenset({
     "agent_start", "auto_retry_start", "compaction_start",
     "summarization_retry_attempt_start",
 })
+
+
+@functools.cache
+def emits_agent_settled(pi_bin: str = "pi") -> bool | None:
+    """Whether this pi emits `agent_settled`. None when it cannot be told.
+
+    Cached per binary: this shells out once per process, not once per
+    session (a run builds a fresh session for every check).
+    """
+    try:
+        r = subprocess.run([pi_bin, "--version"], capture_output=True,
+                           text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    m = re.search(r"(\d+)\.(\d+)\.(\d+)", r.stdout or "")
+    if not m:
+        return None
+    return (int(m.group(1)), int(m.group(2))) >= _SETTLE_EVENT_MIN_VERSION
 
 
 def build_command(
@@ -112,6 +135,8 @@ class PiSession:
 
         Path(config_dir).mkdir(parents=True, exist_ok=True)
         self.cmd = cmd
+        # None (undeterminable) falls back to the grace period.
+        self._settles_on_agent_end = emits_agent_settled(pi_bin) is False
         self.proc = subprocess.Popen(
             cmd,
             cwd=self.cwd,
@@ -129,7 +154,9 @@ class PiSession:
 
     def _read_stdout(self):
         """Split stdout on LF only and push decoded records onto the queue."""
-        buf = b""
+        # bytearray, not bytes: a single record can be megabytes (a pdf_search
+        # `get` over many pages), and re-copying it on every append is quadratic.
+        buf = bytearray()
         try:
             while True:
                 # read1, not read: read(n) on a BufferedReader blocks until it
@@ -139,12 +166,15 @@ class PiSession:
                 if not chunk:
                     break
                 buf += chunk
-                while b"\n" in buf:
-                    raw, buf = buf.split(b"\n", 1)
-                    self._push(raw)
+                while True:
+                    nl = buf.find(b"\n")
+                    if nl < 0:
+                        break
+                    self._push(bytes(buf[:nl]))
+                    del buf[:nl + 1]
         finally:
             if buf.strip():
-                self._push(buf)
+                self._push(bytes(buf))
             self._events.put(None)  # EOF sentinel
 
     def _push(self, raw: bytes):
@@ -174,65 +204,57 @@ class PiSession:
         req_id = uuid.uuid4().hex[:12]
         self._send({"id": req_id, "type": "prompt", "message": message})
 
-        accepted = False
-        settled = False
-        summary = {"accepted": False, "settled": False, "errors": [], "text": ""}
-        deadline = threading.Event()
-        timer = threading.Timer(timeout, deadline.set)
-        timer.start()
-        # Set when agent_end says the run is over, to a moment slightly in the
-        # future: see _SETTLE_GRACE.
+        summary = {"settled": False, "errors": []}
+        # How long to wait after agent_end for an agent_settled that may not be
+        # coming: none at all when the version says it never will.
+        grace = 0.0 if self._settles_on_agent_end else _SETTLE_GRACE
+        deadline = time.monotonic() + timeout
+        # Set when agent_end says the run is over; see the module comment.
         settle_at = None
-        try:
-            while not deadline.is_set():
-                try:
-                    ev = self._events.get(timeout=0.25)
-                except queue.Empty:
-                    if settle_at is not None and time.monotonic() >= settle_at:
-                        settled = summary["settled"] = True
-                        break
-                    continue
-                if ev is None:
-                    if settle_at is not None:
-                        # pi finished the run and then exited; that is a settle,
-                        # not a crash.
-                        settled = summary["settled"] = True
-                        break
-                    raise PiError(
-                        f"pi exited before the run settled "
-                        f"(code {self.proc.returncode})"
-                    )
 
-                etype = ev.get("type")
+        while time.monotonic() < deadline:
+            try:
+                ev = self._events.get(timeout=0.1 if settle_at else 0.5)
+            except queue.Empty:
+                if settle_at is not None and time.monotonic() >= settle_at:
+                    summary["settled"] = True
+                    return summary
+                continue
 
-                # Command acknowledgement for our prompt.
-                if etype == "response" and ev.get("id") == req_id:
-                    accepted = summary["accepted"] = bool(ev.get("success"))
-                    if not accepted:
-                        raise PiError(f"pi rejected the prompt: {ev.get('error')}")
-                    continue
+            if ev is None:
+                if settle_at is not None:
+                    # pi finished the run and then exited; a settle, not a crash.
+                    summary["settled"] = True
+                    return summary
+                raise PiError(
+                    f"pi exited before the run settled (code {self.proc.returncode})")
 
-                if on_event is not None:
-                    on_event(ev)
+            etype = ev.get("type")
 
-                if etype == "extension_error":
-                    summary["errors"].append(ev.get("error") or "extension error")
+            # Command acknowledgement for our prompt.
+            if etype == "response" and ev.get("id") == req_id:
+                if not ev.get("success"):
+                    raise PiError(f"pi rejected the prompt: {ev.get('error')}")
+                continue
 
-                if etype == "agent_settled":
-                    settled = summary["settled"] = True
-                    break
-                if etype == "agent_end" and not ev.get("willRetry"):
-                    settle_at = time.monotonic() + _SETTLE_GRACE
-                elif etype in _WORK_RESUMED:
-                    settle_at = None
-            else:
-                raise PiError(f"pi did not settle within {timeout}s")
-        finally:
-            timer.cancel()
+            if on_event is not None:
+                on_event(ev)
 
-        if not settled:
-            raise PiError(f"pi did not settle within {timeout}s")
-        return summary
+            if etype == "extension_error":
+                summary["errors"].append(ev.get("error") or "extension error")
+
+            if etype == "agent_settled":
+                summary["settled"] = True
+                return summary
+            if etype == "agent_end" and not ev.get("willRetry"):
+                if grace <= 0:
+                    summary["settled"] = True
+                    return summary
+                settle_at = time.monotonic() + grace
+            elif etype in _WORK_RESUMED:
+                settle_at = None
+
+        raise PiError(f"pi did not settle within {timeout}s")
 
     def close(self, timeout: float = 10.0):
         """Close stdin so pi exits, then reap it."""
@@ -295,12 +317,3 @@ def message_usage(event: dict) -> dict | None:
     out["cost"] = float((cost or {}).get("total") or 0.0) if isinstance(cost, dict) else 0.0
     out["total"] = sum(out[k] for k in USAGE_FIELDS)
     return out
-
-
-def tool_finished(event: dict, name: str) -> dict | None:
-    """The result of a completed call to `name`, if this event is one."""
-    if event.get("type") != "tool_execution_end":
-        return None
-    if event.get("toolName") != name:
-        return None
-    return event.get("result") or {}

@@ -5,13 +5,11 @@ totals accumulate across every pi session a question uses: the searcher's
 one long session plus a fresh session per semantic and coherence check.
 """
 
-import sys
 import unittest
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from . import support  # noqa: F401  (puts SKILL_DIR on sys.path)
 import pi_rpc  # noqa: E402
-from tests.support import load_script  # noqa: E402
+from .support import load_script
 
 
 def message_end(input=0, output=0, cacheRead=0, cacheWrite=0, cost=0.0):
@@ -79,7 +77,8 @@ class TestTokenLedger(LedgerCase):
         self.assertEqual(snap["by_agent"]["searcher"]["calls"], 2)
         self.assertAlmostEqual(snap["by_agent"]["searcher"]["cost"], 0.03)
         self.assertEqual(snap["by_agent"]["semantic"]["total"], 55)
-        self.assertEqual(snap["by_agent"]["coherence"]["calls"], 0)
+        # Buckets appear only once an agent has actually spent something
+        self.assertNotIn("coherence", snap["by_agent"])
 
     def test_run_total_sums_every_agent(self):
         self.ledger.add("searcher", pi_rpc.message_usage(message_end(input=100, cost=0.01)))
@@ -104,10 +103,13 @@ class TestTokenLedger(LedgerCase):
         snap["by_agent"]["searcher"]["total"] = 999999
         self.assertEqual(self.ledger.snapshot()["by_agent"]["searcher"]["total"], 100)
 
-    def test_unknown_agent_is_ignored(self):
-        self.ledger.add("nonsense", pi_rpc.message_usage(message_end(input=100)))
-        self.assertEqual(self.ledger.snapshot()["total"]["total"], 0)
-        self.assertEqual(self.emitted, [])
+    def test_a_new_agent_needs_no_roster_edit(self):
+        """Buckets are created on demand, so adding a fourth agent cannot
+        silently report zero tokens for it."""
+        self.ledger.add("a-new-agent", pi_rpc.message_usage(message_end(input=100)))
+        snap = self.ledger.snapshot()
+        self.assertEqual(snap["by_agent"]["a-new-agent"]["total"], 100)
+        self.assertEqual(snap["total"]["total"], 100)
 
     def test_observer_only_records_message_end(self):
         observe = self.ledger.observer("coherence")

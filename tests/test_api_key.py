@@ -10,8 +10,7 @@ import sys
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from tests.support import load_script  # noqa: E402
+from .support import load_script
 
 
 class KeyCase(unittest.TestCase):
@@ -22,6 +21,7 @@ class KeyCase(unittest.TestCase):
         self._env = dict(os.environ)
         os.environ.pop("TEST_KEY_ENV", None)
         self._run = subprocess.run
+        self.based.api_key.cache_clear()
 
     def tearDown(self):
         os.environ.clear()
@@ -35,8 +35,9 @@ class KeyCase(unittest.TestCase):
             calls.append(cmd)
             return subprocess.CompletedProcess(cmd, returncode, stdout, "")
 
+        # based-answers.py does `import subprocess`, so one assignment
+        # covers both names — they are the same module attribute.
         subprocess.run = fake
-        self.based.subprocess.run = fake
         return calls
 
 
@@ -126,7 +127,9 @@ class TestEveryAgentIsAuthenticated(KeyCase):
     def test_checker_session_carries_the_key(self):
         os.environ["TEST_KEY_ENV"] = "sk-abc"
         envs = self.envs_passed_to_pi(
-            lambda: self.based.run_checker("rubric", agent="coherence"))
+            lambda: self.based.run_checker(
+                "rubric", self.based.TokenLedger(None, emit_fn=lambda *a: None),
+                agent="coherence"))
         self.assertTrue(envs, "run_checker built no pi session")
         for env in envs:
             self.assertEqual(env.get("TEST_KEY_ENV"), "sk-abc",

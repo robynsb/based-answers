@@ -11,8 +11,19 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { execFileSync } from "node:child_process";
 
-const PYTHON = process.env.BA_PYTHON ?? "python3";
-const SKILL_DIR = process.env.BA_SKILL_DIR ?? ".";
+function required(name: string): string {
+  const v = process.env[name];
+  if (!v) {
+    // A fallback could not work anyway — a bare `python3` has no pymupdf —
+    // and would surface as an opaque tool result the agent tries to reason
+    // about, rather than as a wiring error.
+    throw new Error(`${name} is not set — this tool must be run inside the citation-qa pipeline`);
+  }
+  return v;
+}
+
+const PYTHON = required("BA_PYTHON");
+const SKILL_DIR = required("BA_SKILL_DIR");
 
 function run(args: string[]): string {
   try {

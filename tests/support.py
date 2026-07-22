@@ -1,9 +1,15 @@
 """Helpers for loading the skill's dash-named scripts as modules."""
 
 import importlib.util
+import sys
 from pathlib import Path
 
 SKILL_DIR = Path(__file__).resolve().parent.parent
+
+# The skill's own modules (e.g. pi_rpc) are importable from any test, without
+# each one re-deriving the path and re-inserting it.
+if str(SKILL_DIR) not in sys.path:
+    sys.path.insert(0, str(SKILL_DIR))
 
 
 def load_script(filename: str):

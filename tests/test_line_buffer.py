@@ -5,12 +5,9 @@ streams text a token at a time, so feeding deltas straight to emit_line
 put every word on its own line.
 """
 
-import sys
 import unittest
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from tests.support import load_script  # noqa: E402
+from .support import load_script
 
 
 class TestLineBuffer(unittest.TestCase):

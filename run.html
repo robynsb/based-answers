@@ -596,7 +596,9 @@ function handle(msg) {
   // appears in the next round's searcher stream instead
 }
 
-const AGENT_LABEL = { searcher: "searcher", semantic: "semantic", coherence: "coherence" };
+// Order the agents we know; anything else still renders, so adding an agent
+// server-side needs no change here.
+const AGENT_ORDER = ["searcher", "semantic", "coherence"];
 
 function money(n) {
   // Runs are cheap enough that 2dp rounds most of them to $0.00. A cheap
@@ -613,11 +615,13 @@ function money(n) {
 function renderTokens(d) {
   const bar = $("token-bar");
   if (!bar || !d || !d.total) return;
-  const per = Object.keys(AGENT_LABEL)
-    .filter(a => d.by_agent?.[a]?.calls)
+  const names = Object.keys(d.by_agent || {})
+    .sort((a, b) => (AGENT_ORDER.indexOf(a) + 1 || 99) - (AGENT_ORDER.indexOf(b) + 1 || 99));
+  const per = names
+    .filter(a => d.by_agent[a]?.calls)
     .map(a => {
       const b = d.by_agent[a];
-      return `<span class="tk-agent">${AGENT_LABEL[a]} <b>${b.total.toLocaleString()}</b>`
+      return `<span class="tk-agent">${a} <b>${b.total.toLocaleString()}</b>`
            + ` <span class="tk-cost">${money(b.cost)} · ${b.calls} call${b.calls === 1 ? "" : "s"}</span></span>`;
     }).join("");
   bar.innerHTML = `<span class="tk-label">Tokens</span>${per}`

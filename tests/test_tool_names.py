@@ -7,14 +7,11 @@ than as a startup error, so the two lists are pinned together here.
 """
 
 import re
-import sys
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from tests.support import load_script  # noqa: E402
+from .support import SKILL_DIR, load_script
 
-SKILL_DIR = Path(__file__).resolve().parent.parent
 TOOLS_DIR = SKILL_DIR / "tools"
 
 
