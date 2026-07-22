@@ -46,9 +46,12 @@ def build_command(
         "--no-extensions",
         "--no-approve",
         "--no-builtin-tools",
-        "--tools", ",".join(tools),
         "--system-prompt", system_prompt,
     ]
+    # No --tools at all means no tools, which is what the checkers want:
+    # they judge text and must not be able to go looking at the sources.
+    if tools:
+        cmd[6:6] = ["--tools", ",".join(tools)]
     for ext in extensions:
         cmd.extend(["-e", str(ext)])
     if session_dir is not None:

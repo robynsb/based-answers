@@ -9,11 +9,16 @@ Starts a Flask server (see live-server.py), opens the browser, and runs
 until Ctrl-C. Questions are submitted through the web UI; each one spawns
 its own worker thread running the search/check pipeline:
 
-The search agent runs in a SINGLE persistent opencode session (--session).
-It runs once with the full context, then all three checkers (deterministic,
-semantic, coherence) run. If any fails, feedback is sent as a follow-up
-message to the SAME session, so the agent retains all search results and
-conversation history across rounds.
+The search agent runs in a SINGLE persistent `pi --mode rpc` process, held
+open for the whole run. Round 1 sends the full context; each prompt returns
+only once pi reports the run has settled, at which point all three checkers
+(deterministic, semantic, coherence) run. If any fails, the feedback is the
+next prompt on that same process, so the agent retains all search results
+and conversation history across rounds.
+
+pi is run with no global or project configuration: PI_CODING_AGENT_DIR is
+redirected under the CWD, discovery is disabled, and the agent is given
+exactly the three tools in tools/ and no built-ins.
 
 All progress events are persisted to citation-qa.db and streamed live to
 the browser; past runs stay viewable across server restarts.
@@ -24,23 +29,34 @@ import importlib.util
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 from pathlib import Path
+
+import pi_rpc
 
 
 SKILL_DIR = Path(__file__).parent.resolve()
 AGENT_NAME = "citation-searcher"
 AGENT_SRC = SKILL_DIR / f"{AGENT_NAME}.md"
-AGENT_DST = Path.home() / ".config/opencode/agents" / f"{AGENT_NAME}.md"
 CHECKER_NAME = "coherence-checker"
 CHECKER_SRC = SKILL_DIR / f"{CHECKER_NAME}.md"
-CHECKER_DST = Path.home() / ".config/opencode/agents" / f"{CHECKER_NAME}.md"
-TOOLS_DIR = Path.home() / ".config/opencode/tools"
+
+# The agent tools are checked-in files handed to pi by absolute path; nothing
+# is installed into, or read from, a global agent config directory.
+TOOL_EXTENSIONS = [
+    SKILL_DIR / "tools" / "pdf-search.ts",
+    SKILL_DIR / "tools" / "verify-citations.ts",
+    SKILL_DIR / "tools" / "write-answer.ts",
+]
+SEARCH_TOOLS = ["pdf_search", "verify_citations", "write_answer"]
+
+# Everything pi would otherwise keep in ~/.pi lives here, under the CWD.
+PI_STATE_DIR = Path(".based-answers")
+PI_MODEL = os.environ.get("BA_PI_MODEL", "deepseek/deepseek-v4-flash")
+
 MAX_ROUNDS = 5
 # How often the draft answer file is checked for a rewrite while the agent runs
 ANSWER_POLL_SECONDS = 0.7
@@ -57,11 +73,6 @@ ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
 SERVER = None
 PDF_INFO: list[dict] = []
 PDF_DIR = "."
-
-# opencode session ids already claimed by a run (parallel runs must not
-# steal each other's freshly created sessions)
-_claimed_sessions: set[str] = set()
-_claim_lock = threading.Lock()
 
 
 def _load_script(filename: str):
@@ -117,111 +128,71 @@ def derive_slug(question: str) -> str:
     return slug[:80]
 
 
-def get_session_ids() -> set[str]:
-    cmd = ["opencode", "session", "list", "--format", "json", "--max-count", "50"]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
-    try:
-        sessions = json.loads(result.stdout)
-        return {s["id"] for s in sessions if isinstance(s, dict)}
-    except (json.JSONDecodeError, TypeError):
-        return set()
+def pi_env(slug: str) -> dict:
+    """Environment for a pi subprocess.
 
-
-def get_new_session_id(before_ids: set[str], run_id: str) -> str | None:
-    """Find the session created by this run's search agent.
-
-    Prefer the unique --title match (citation-qa-<run_id>); the "any new
-    session" fallback is only trusted when exactly one unclaimed new id
-    exists, so parallel runs don't steal each other's sessions.
+    ANSWER_SLUG tells the write_answer tool which file to overwrite, so the
+    searcher agent never sees or handles a slug. BA_PYTHON is this process's
+    own interpreter — already resolved, already carrying pymupdf/pyyaml — so
+    the tools invoke the scripts directly whatever provided that interpreter.
     """
-    cmd = ["opencode", "session", "list", "--format", "json", "--max-count", "50"]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
-    try:
-        sessions = json.loads(result.stdout)
-        if not isinstance(sessions, list):
-            return None
-    except (json.JSONDecodeError, TypeError):
-        return None
-
-    with _claim_lock:
-        candidates = [
-            s for s in sessions
-            if isinstance(s, dict) and s["id"] not in before_ids
-            and s["id"] not in _claimed_sessions
-        ]
-        for s in candidates:
-            if f"citation-qa-{run_id}" in s.get("title", ""):
-                _claimed_sessions.add(s["id"])
-                return s["id"]
-        if len(candidates) == 1:
-            _claimed_sessions.add(candidates[0]["id"])
-            return candidates[0]["id"]
-    return None
+    return {
+        "ANSWER_SLUG": slug,
+        "BA_PYTHON": sys.executable,
+        "BA_SKILL_DIR": str(SKILL_DIR),
+    }
 
 
-def run_search_agent(prompt_path: Path | None, question: str, session_id: str | None = None,
-                     message: str | None = None, timeout: int = 600,
-                     run_id: str | None = None, watcher=None) -> int:
-    cmd = ["opencode", "run", "--agent", AGENT_NAME]
-    slug = run_id or derive_slug(question)
+def open_search_session(slug: str) -> pi_rpc.PiSession:
+    """One pi process per run, holding the whole multi-round conversation."""
+    return pi_rpc.PiSession(
+        config_dir=PI_STATE_DIR / "pi",
+        session_dir=PI_STATE_DIR / "sessions" / slug,
+        extensions=TOOL_EXTENSIONS,
+        tools=SEARCH_TOOLS,
+        system_prompt=AGENT_SRC.read_text(),
+        model=PI_MODEL,
+        env=pi_env(slug),
+    )
 
-    if session_id:
-        cmd.extend(["--session", session_id])
-        if message:
-            cmd.append(message)
-            emit_line(run_id, "searcher",
-                      f"── FEEDBACK SENT TO {AGENT_NAME} ──\n{message}\n{'─' * 40}\n")
-    else:
-        cmd.extend(["-f", str(prompt_path), "--title", f"citation-qa-{slug}", question])
-        print(f"\n{'─' * 60}", flush=True)
-        print(f"{run_tag(run_id)}CONTEXT GIVEN TO {AGENT_NAME}:", flush=True)
-        print(f"{'─' * 60}", flush=True)
-        print(prompt_path.read_text(), flush=True)
-        print(f"{'─' * 60}\n", flush=True)
-        emit_line(run_id, "searcher",
-                  f"── CONTEXT GIVEN TO {AGENT_NAME} ──\n{prompt_path.read_text()}\n{'─' * 40}\n")
 
-    label = f"{AGENT_NAME}{' (continuing session)' if session_id else ''}"
-    print(f"  {run_tag(run_id)}Agent: {label}", flush=True)
-    print(f"{'-' * 50}", flush=True)
-
-    # The write_answer tool reads this to know which answers/*.yml file to
-    # (over)write, so the searcher agent never has to know or pass a slug.
-    env = {**os.environ, "ANSWER_SLUG": slug}
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, env=env)
+def run_search_round(session: pi_rpc.PiSession, message: str, label: str,
+                     run_id: str | None = None, watcher=None,
+                     timeout: int = 900) -> dict:
+    """Send one round's message and block until the agent has fully settled."""
+    print(f"\n{'─' * 60}", flush=True)
+    print(f"{run_tag(run_id)}{label} GIVEN TO {AGENT_NAME}:", flush=True)
+    print(f"{'─' * 60}", flush=True)
+    print(message, flush=True)
+    print(f"{'─' * 60}\n", flush=True)
+    emit_line(run_id, "searcher",
+              f"── {label} GIVEN TO {AGENT_NAME} ──\n{message}\n{'─' * 40}\n")
 
     # The draft answer streams to the browser as the agent writes and rewrites it
     stop_watch = threading.Event()
     watch_thread = None
     if watcher is not None:
         watch_thread = threading.Thread(target=watcher.watch_until, args=(stop_watch,),
-                                        daemon=True, name=f"watch-{slug}")
+                                        daemon=True, name="watch-answer")
         watch_thread.start()
 
-    denied = 0
-    try:
-        for line in iter(proc.stdout.readline, ""):
-            if not line:
-                break
-            print(f"{SEARCH_COLOR}{run_tag(run_id)}{line}{RESET}", end="", flush=True)
-            emit_line(run_id, "searcher", line)
-            if "permission requested" in line.lower() or "auto-rejecting" in line.lower():
-                denied += 1
-                print(f"  \033[33m[DENIED]\033[0m {line.strip()}")
+    def on_event(ev):
+        delta = pi_rpc.text_delta(ev)
+        if delta:
+            print(f"{SEARCH_COLOR}{delta}{RESET}", end="", flush=True)
+            emit_line(run_id, "searcher", delta)
+            return
+        if ev.get("type") == "tool_execution_start":
+            note = f"[tool] {ev.get('toolName')} {json.dumps(ev.get('args') or {})[:300]}\n"
+            print(f"{SEARCH_COLOR}{run_tag(run_id)}{note}{RESET}", end="", flush=True)
+            emit_line(run_id, "searcher", note)
 
-        proc.wait(timeout=timeout)
+    try:
+        return session.prompt(message, on_event=on_event, timeout=timeout)
     finally:
         stop_watch.set()
         if watch_thread is not None:
             watch_thread.join(timeout=10)
-
-    if denied:
-        print(f"  \033[33m[{denied} permission(s) denied this round]\033[0m")
-
-    if proc.returncode != 0:
-        print(f"  (exit code {proc.returncode})")
-
-    return proc.returncode
 
 
 def run_deterministic(yaml_path: Path, pdf_dir: str = ".") -> dict:
@@ -243,25 +214,42 @@ def run_deterministic(yaml_path: Path, pdf_dir: str = ".") -> dict:
 def run_checker(prompt_text: str, color: str = "", timeout: int = 120,
                 agent: str = "coherence", run_id: str | None = None,
                 extra: dict | None = None) -> str:
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as f:
-        f.write(prompt_text)
-        tmp_path = f.name
+    """Judge one rubric with a fresh, tool-less pi session.
 
+    Each check is independent, so it gets its own session with no tools at
+    all — the checker judges the text it is given and cannot go consult the
+    sources itself.
+    """
     emit_line(run_id, agent,
               f"── PROMPT GIVEN TO {CHECKER_NAME} ──\n{prompt_text}\n{'─' * 40}\n", extra)
 
-    cmd = ["opencode", "run", "--agent", CHECKER_NAME, "Evaluate the following.", "-f", tmp_path]
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
-    lines = []
-    for line in iter(proc.stdout.readline, ""):
-        if not line:
-            break
-        print(f"{color}{run_tag(run_id)}{line}{RESET if color else ''}", end="", flush=True)
-        emit_line(run_id, agent, line, extra)
-        lines.append(line)
-    proc.wait(timeout=timeout)
-    os.unlink(tmp_path)
-    return "".join(lines)
+    chunks = []
+
+    def on_event(ev):
+        delta = pi_rpc.text_delta(ev)
+        if delta:
+            print(f"{color}{delta}{RESET if color else ''}", end="", flush=True)
+            emit_line(run_id, agent, delta, extra)
+            chunks.append(delta)
+
+    session = pi_rpc.PiSession(
+        config_dir=PI_STATE_DIR / "pi",
+        extensions=[],
+        tools=[],
+        system_prompt=CHECKER_SRC.read_text(),
+        model=PI_MODEL,
+        env={"ANSWER_SLUG": ""},
+    )
+    try:
+        session.prompt(prompt_text, on_event=on_event, timeout=timeout)
+    except pi_rpc.PiError as e:
+        # A checker that cannot run must not silently read as a pass.
+        msg = f"\n[checker error: {e}]\n"
+        emit_line(run_id, agent, msg, extra)
+        chunks.append(msg)
+    finally:
+        session.close()
+    return "".join(chunks)
 
 
 def run_semantic_checkers(yaml_path: Path, run_id: str | None = None) -> list[dict]:
@@ -613,128 +601,19 @@ def install_banner(label: str):
     print(f"{'#' * 60}", flush=True)
 
 
-def install_tools():
-    TOOLS_DIR.mkdir(parents=True, exist_ok=True)
-
-    # This process is already running inside the flake dev shell, so sys.executable
-    # is the flake's python3 (with pymupdf/pyyaml). Bake that resolved interpreter
-    # into the generated wrappers so each tool call runs the script directly,
-    # instead of paying a fresh `nix develop` flake evaluation on every invocation.
-    python = sys.executable
-
-    pdf_search_ts = TOOLS_DIR / "pdf-search.ts"
-    verify_citations_ts = TOOLS_DIR / "verify-citations.ts"
-    pdf_search_ts.write_text(f"""import {{ tool }} from "@opencode-ai/plugin"
-import {{ execFileSync }} from "child_process"
-
-const PYTHON = {json.dumps(python)}
-const SKILL_DIR = {json.dumps(str(SKILL_DIR))}
-
-function run(args: string[]): string {{
-  try {{
-    return execFileSync(
-      PYTHON,
-      [`${{SKILL_DIR}}/pdf-search.py`, ...args],
-      {{ timeout: 60000, encoding: "utf-8" }}
-    ).trim()
-  }} catch (e: any) {{
-    return e.stdout?.trim() || e.stderr?.trim() || e.message
-  }}
-}}
-
-export default tool({{
-  description: "Search PDFs for text, enumerate every distinct match of a regex, retrieve full page content, or get document info",
-  args: {{
-    action: tool.schema.enum(["search", "search_regex", "get", "info"]).describe("Action to perform"),
-    pdf: tool.schema.string().describe("Path to the PDF file"),
-    query: tool.schema.string().optional().describe("Text to search for (required for search)"),
-    pattern: tool.schema.string().optional().describe(
-      "Regex pattern to enumerate (required for search_regex). Returns every DISTINCT matching " +
-      "string found anywhere in the document, deduplicated — use this instead of guessing a " +
-      "handful of literal names when a claim needs to rule out a whole family of possible names."),
-    pages: tool.schema.array(tool.schema.number()).optional().describe("Page numbers to retrieve (required for get)"),
-    limit: tool.schema.number().optional().describe("Max search results (default: 10)"),
-  }},
-  async execute(args) {{
-    if (args.action === "info") {{
-      return run([args.pdf, "info"])
-    }}
-    if (args.action === "search") {{
-      if (!args.query) return "Error: query is required for search"
-      return run([args.pdf, "search", args.query, "--limit", String(args.limit ?? 10)])
-    }}
-    if (args.action === "search_regex") {{
-      if (!args.pattern) return "Error: pattern is required for search_regex"
-      return run([args.pdf, "search-regex", args.pattern])
-    }}
-    if (args.action === "get") {{
-      if (!args.pages || args.pages.length === 0) return "Error: page numbers required for get"
-      return run([args.pdf, "get", ...args.pages.map(String)])
-    }}
-    return `Error: unknown action ${{args.action}}`
-  }},
-}})
-""")
-
-    verify_citations_ts.write_text(f"""import {{ tool }} from "@opencode-ai/plugin"
-import {{ execFileSync }} from "child_process"
-
-const PYTHON = {json.dumps(python)}
-const SKILL_DIR = {json.dumps(str(SKILL_DIR))}
-
-export default tool({{
-  description: "Verify citations in a YAML answer file against source PDFs",
-  args: {{
-    yaml: tool.schema.string().describe("Path to the YAML answer file"),
-    pdf_dir: tool.schema.string().optional().describe("Directory containing PDFs (default: working directory)"),
-  }},
-  async execute(args) {{
-    const pdfDir = args.pdf_dir ?? "."
-    try {{
-      const result = execFileSync(
-        PYTHON,
-        [`${{SKILL_DIR}}/verify-citations.py`, "--pdf-dir", pdfDir, args.yaml],
-        {{ timeout: 60000, encoding: "utf-8" }}
-      ).trim()
-      return result
-    }} catch (e: any) {{
-      return e.stdout?.trim() || e.stderr?.trim() || e.message
-    }}
-  }},
-}})
-""")
-
-    write_answer_ts = TOOLS_DIR / "write-answer.ts"
-    write_answer_ts.write_text(f"""import {{ tool }} from "@opencode-ai/plugin"
-import * as fs from "fs"
-
-export default tool({{
-  description: "Write this run's citation-grounded answer YAML file, overwriting any previous round's attempt.",
-  args: {{
-    yaml_content: tool.schema.string().describe("Full YAML content to write"),
-  }},
-  async execute(args) {{
-    const slug = process.env.ANSWER_SLUG
-    if (!slug) {{
-      throw new Error("ANSWER_SLUG is not set — this tool must be run inside the citation-qa pipeline")
-    }}
-    fs.mkdirSync("answers", {{ recursive: true }})
-    const filename = `answers/${{slug}}.yml`
-    fs.writeFileSync(filename, args.yaml_content, "utf-8")
-    return filename
-  }},
-}})
-""")
-
-    print(f"Installed tools: pdf-search, verify-citations, write-answer")
-
-
 def search_loop(slug: str, question: str, pdf_info: list[dict], rounds: list[dict],
                 pdf_dir: str, run_id: str | None = None) -> tuple[Path | None, int]:
     """Returns (yaml_path, round_num) on success, (None, MAX_ROUNDS) when exhausted."""
-    session_id = None
-    before_ids = get_session_ids()
+    session = open_search_session(slug)
+    try:
+        return _search_rounds(session, slug, question, pdf_info, rounds, pdf_dir, run_id)
+    finally:
+        session.close()
 
+
+def _search_rounds(session, slug: str, question: str, pdf_info: list[dict],
+                   rounds: list[dict], pdf_dir: str,
+                   run_id: str | None) -> tuple[Path | None, int]:
     for round_num in range(1, MAX_ROUNDS + 1):
         label = f"ROUND {round_num}/{MAX_ROUNDS}"
         if rounds:
@@ -745,26 +624,23 @@ def search_loop(slug: str, question: str, pdf_info: list[dict], rounds: list[dic
         # One watcher per round, baselined on the previous round's leftover file
         watcher = AnswerWatcher(slug, run_id)
 
+        # Round 1 sends the full context; later rounds send only the round
+        # just finished, because the session still holds every earlier one.
         if round_num == 1:
-            ctx = write_context(slug, question, pdf_info, rounds)
-            run_search_agent(ctx, question, session_id=None, run_id=run_id, watcher=watcher)
-            # Discover the new session ID created by this run
-            for _ in range(5):
-                time.sleep(1)
-                session_id = get_new_session_id(before_ids, run_id or slug)
-                if session_id:
-                    print(f"  {run_tag(run_id)}[Session: {session_id[:8]}...]", flush=True)
-                    break
-            if not session_id:
-                print(f"  {run_tag(run_id)}[WARN] Could not determine session ID; retries will be fresh sessions", flush=True)
-        elif session_id:
-            message = build_feedback_message(round_num, rounds)
-            run_search_agent(None, question, session_id=session_id, message=message,
-                             run_id=run_id, watcher=watcher)
+            message = write_context(slug, question, pdf_info, rounds).read_text()
+            what = "CONTEXT"
         else:
-            # Fallback: fresh context + fresh session (session discovery failed)
-            ctx = write_context(slug, question, pdf_info, rounds)
-            run_search_agent(ctx, question, session_id=None, run_id=run_id, watcher=watcher)
+            message = build_feedback_message(round_num, rounds)
+            what = "FEEDBACK"
+
+        try:
+            run_search_round(session, message, what, run_id=run_id, watcher=watcher)
+        except pi_rpc.PiError as e:
+            print(f"  {run_tag(run_id)}[FAIL] search agent: {e}\n")
+            feedback = f"The search agent did not complete: {e}"
+            rounds.append({"round": round_num, "feedback": feedback})
+            emit(run_id, "feedback", {"round": round_num, "text": feedback})
+            raise
 
         yaml_path = find_yaml(slug)
         if not yaml_path:
@@ -917,19 +793,20 @@ def main():
 
     os.makedirs("answers", exist_ok=True)
 
-    # Install agents (always copy to pick up changes)
-    AGENT_DST.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(AGENT_SRC, AGENT_DST)
-    print(f"Installed agent: {AGENT_DST}")
-
-    if not CHECKER_DST.exists():
-        shutil.copy2(CHECKER_SRC, CHECKER_DST)
-        print(f"Installed agent: {CHECKER_DST}")
-    else:
-        print(f"Checker already installed: {CHECKER_DST}")
-
-    # Install custom tools
-    install_tools()
+    # Nothing is installed into a global agent directory: the prompts are read
+    # from this repo and passed as --system-prompt, and the tools are handed to
+    # pi by path. Everything pi persists stays under PI_STATE_DIR in the CWD.
+    PI_STATE_DIR.mkdir(parents=True, exist_ok=True)
+    missing = [t for t in TOOL_EXTENSIONS if not t.exists()]
+    if missing:
+        print(f"Error: missing agent tools: {', '.join(str(m) for m in missing)}",
+              file=sys.stderr)
+        sys.exit(1)
+    if not os.environ.get("DEEPSEEK_API_KEY"):
+        print("Warning: DEEPSEEK_API_KEY is not set — pi will have no credentials "
+              "(auth.json does not apply, since PI_CODING_AGENT_DIR is redirected)",
+              file=sys.stderr)
+    print(f"Agent: pi --mode rpc, model {PI_MODEL}, state in {PI_STATE_DIR}/")
 
     # Collect and index PDFs from the working directory
     pdf_paths = sorted(Path(".").glob("*.pdf"))
