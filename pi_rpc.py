@@ -308,6 +308,21 @@ def thinking_delta(event: dict) -> str | None:
     return _delta(event, "thinking_delta")
 
 
+def tool_result_text(event: dict) -> tuple[str, str, bool] | None:
+    """(toolName, text, isError) from a finished tool call, or None.
+
+    `tool_execution_end` carries the same result the model receives, as a
+    list of content blocks; only the text ones are of any use to a reader.
+    """
+    if event.get("type") != "tool_execution_end":
+        return None
+    result = event.get("result") or {}
+    blocks = result.get("content") or []
+    text = "\n".join(b.get("text", "") for b in blocks
+                     if isinstance(b, dict) and b.get("type") == "text")
+    return event.get("toolName") or "", text.strip(), bool(event.get("isError"))
+
+
 USAGE_FIELDS = ("input", "output", "cacheRead", "cacheWrite")
 
 

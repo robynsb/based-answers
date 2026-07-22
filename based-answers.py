@@ -53,6 +53,9 @@ TOOL_EXTENSIONS = [
     SKILL_DIR / "tools" / "write-answer.ts",
 ]
 SEARCH_TOOLS = ["pdf_search", "verify_citations", "write_answer"]
+# Tools whose result is echoed into the searcher's stream, and how much of it
+ECHOED_TOOLS = {"verify_citations"}
+TOOL_RESULT_CHARS = 4000
 
 # Everything pi would otherwise keep in ~/.pi lives here, under the CWD.
 PI_STATE_DIR = Path(".based-answers")
@@ -360,9 +363,23 @@ def run_search_round(session: pi_rpc.PiSession, message: str, label: str,
         watch_thread.start()
 
     def tool_note(ev, buf):
-        if ev.get("type") != "tool_execution_start":
-            return
-        note = f"[tool] {ev.get('toolName')} {json.dumps(ev.get('args') or {})[:300]}"
+        if ev.get("type") == "tool_execution_start":
+            note = f"[tool] {ev.get('toolName')} {json.dumps(ev.get('args') or {})[:300]}"
+        else:
+            done = pi_rpc.tool_result_text(ev)
+            # Only the verifier's result is echoed. It is the one the reader
+            # needs — which citations failed and why is the whole reason a
+            # round repeats — and it is a compact table. A pdf_search result
+            # is up to 100 enumerated matches with snippets, which would bury
+            # the agent's own reasoning in the stream it is meant to explain.
+            if done is None or done[0] not in ECHOED_TOOLS or not done[1]:
+                return
+            name, text, is_error = done
+            if len(text) > TOOL_RESULT_CHARS:
+                text = (text[:TOOL_RESULT_CHARS]
+                        + f"\n… [{len(text) - TOOL_RESULT_CHARS} more characters]")
+            head = f"── {name} {'FAILED' if is_error else 'result'} ──"
+            note = f"{head}\n{text}\n{'─' * 40}"
         print(f"{SEARCH_COLOR}{run_tag(run_id)}{note}\n{RESET}", end="", flush=True)
         buf.flush()  # don't let a half-finished sentence merge into the note
         emit_line(run_id, "searcher", note)
