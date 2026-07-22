@@ -17,12 +17,31 @@ import os
 import queue
 import subprocess
 import threading
+import time
 import uuid
 from pathlib import Path
 
 
 class PiError(RuntimeError):
     pass
+
+
+# How a round ends depends on the pi version, so both are handled.
+#
+# pi >= 0.80 emits `agent_settled` once it will not continue automatically —
+# the exact boundary this pipeline wants. pi 0.79 (the version in nixpkgs)
+# has no such event: there, `agent_end` is itself terminal.
+#
+# So `agent_end` arms a settle a moment in the future rather than ending the
+# round outright. On a newer pi the `agent_settled` that follows wins the
+# race and ends the round immediately; on 0.79 nothing follows and the grace
+# expires. Any sign that pi resumed work disarms it, so an automatic retry or
+# a queued continuation is still waited out on both versions.
+_SETTLE_GRACE = 2.0
+_WORK_RESUMED = frozenset({
+    "agent_start", "auto_retry_start", "compaction_start",
+    "summarization_retry_attempt_start",
+})
 
 
 def build_command(
@@ -161,13 +180,24 @@ class PiSession:
         deadline = threading.Event()
         timer = threading.Timer(timeout, deadline.set)
         timer.start()
+        # Set when agent_end says the run is over, to a moment slightly in the
+        # future: see _SETTLE_GRACE.
+        settle_at = None
         try:
             while not deadline.is_set():
                 try:
-                    ev = self._events.get(timeout=1.0)
+                    ev = self._events.get(timeout=0.25)
                 except queue.Empty:
+                    if settle_at is not None and time.monotonic() >= settle_at:
+                        settled = summary["settled"] = True
+                        break
                     continue
                 if ev is None:
+                    if settle_at is not None:
+                        # pi finished the run and then exited; that is a settle,
+                        # not a crash.
+                        settled = summary["settled"] = True
+                        break
                     raise PiError(
                         f"pi exited before the run settled "
                         f"(code {self.proc.returncode})"
@@ -188,11 +218,13 @@ class PiSession:
                 if etype == "extension_error":
                     summary["errors"].append(ev.get("error") or "extension error")
 
-                # agent_end can be followed by an automatic retry or a queued
-                # continuation; agent_settled is the real boundary.
                 if etype == "agent_settled":
                     settled = summary["settled"] = True
                     break
+                if etype == "agent_end" and not ev.get("willRetry"):
+                    settle_at = time.monotonic() + _SETTLE_GRACE
+                elif etype in _WORK_RESUMED:
+                    settle_at = None
             else:
                 raise PiError(f"pi did not settle within {timeout}s")
         finally:

@@ -111,6 +111,47 @@ class TestPromptLifecycle(unittest.TestCase):
         self.assertIn("auto_retry_start", seen)
         self.assertEqual(seen.count("agent_end"), 2)
 
+    def test_settles_on_agent_end_when_there_is_no_agent_settled(self):
+        """pi 0.79 (the nixpkgs version) has no agent_settled event at all."""
+        fake = make_fake_pi(
+            "cmd = read()\n"
+            "emit({'type': 'response', 'id': cmd['id'], 'success': True})\n"
+            "emit({'type': 'agent_end', 'messages': []})\n"
+            "import time; time.sleep(20)\n"  # stays alive, emits nothing further
+        )
+        with session(fake) as s:
+            out = s.prompt("hi", timeout=25)
+        self.assertTrue(out["settled"])
+
+    def test_work_resuming_after_agent_end_disarms_the_settle(self):
+        """A queued continuation on 0.79 must not be cut short by the grace."""
+        fake = make_fake_pi(
+            "import time\n"
+            "cmd = read()\n"
+            "emit({'type': 'response', 'id': cmd['id'], 'success': True})\n"
+            "emit({'type': 'agent_end', 'messages': []})\n"
+            "emit({'type': 'agent_start'})\n"          # resumed within the grace
+            "time.sleep(4)\n"
+            "emit({'type': 'late', 'n': 1})\n"
+            "emit({'type': 'agent_end', 'messages': []})\n"
+            "time.sleep(20)\n"
+        )
+        seen = []
+        with session(fake) as s:
+            s.prompt("hi", on_event=lambda e: seen.append(e.get("type")), timeout=30)
+        self.assertIn("late", seen, "settled before the resumed work finished")
+
+    def test_exit_right_after_agent_end_is_a_settle_not_a_crash(self):
+        fake = make_fake_pi(
+            "cmd = read()\n"
+            "emit({'type': 'response', 'id': cmd['id'], 'success': True})\n"
+            "emit({'type': 'agent_end', 'messages': []})\n"
+            "sys.exit(0)\n"
+        )
+        with session(fake) as s:
+            out = s.prompt("hi", timeout=25)
+        self.assertTrue(out["settled"])
+
     def test_streams_events_to_callback(self):
         fake = make_fake_pi(
             "cmd = read()\n"

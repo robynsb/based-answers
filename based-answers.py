@@ -57,6 +57,11 @@ SEARCH_TOOLS = ["pdf_search", "verify_citations", "write_answer"]
 PI_STATE_DIR = Path(".based-answers")
 PI_MODEL = os.environ.get("BA_PI_MODEL", "deepseek/deepseek-v4-flash")
 
+# Credentials: the env var wins, else the macOS Keychain generic password
+# stored under this service name (`security add-generic-password -s ... -w`).
+API_KEY_ENV = "DEEPSEEK_API_KEY"
+KEYCHAIN_SERVICE = os.environ.get("BA_KEYCHAIN_SERVICE", "deepseek")
+
 MAX_ROUNDS = 5
 # How often the draft answer file is checked for a rewrite while the agent runs
 ANSWER_POLL_SECONDS = 0.7
@@ -128,6 +133,28 @@ def derive_slug(question: str) -> str:
     return slug[:80]
 
 
+def api_key() -> str | None:
+    """The DeepSeek key, from the environment or the macOS Keychain.
+
+    pi's own auth.json is not reachable here: PI_CODING_AGENT_DIR is
+    redirected under the CWD so a run cannot touch global pi state, which
+    also means a global `pi /login` does not apply. The key is therefore
+    passed in through the environment, and read from the Keychain so it
+    need not live in a dotfile or a shell profile.
+    """
+    key = os.environ.get(API_KEY_ENV)
+    if key:
+        return key.strip()
+    try:
+        r = subprocess.run(
+            ["security", "find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"],
+            capture_output=True, text=True, timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return r.stdout.strip() if r.returncode == 0 and r.stdout.strip() else None
+
+
 def pi_env(slug: str) -> dict:
     """Environment for a pi subprocess.
 
@@ -136,11 +163,15 @@ def pi_env(slug: str) -> dict:
     own interpreter — already resolved, already carrying pymupdf/pyyaml — so
     the tools invoke the scripts directly whatever provided that interpreter.
     """
-    return {
+    env = {
         "ANSWER_SLUG": slug,
         "BA_PYTHON": sys.executable,
         "BA_SKILL_DIR": str(SKILL_DIR),
     }
+    key = api_key()
+    if key:
+        env[API_KEY_ENV] = key
+    return env
 
 
 def open_search_session(slug: str) -> pi_rpc.PiSession:
@@ -238,7 +269,10 @@ def run_checker(prompt_text: str, color: str = "", timeout: int = 120,
         tools=[],
         system_prompt=CHECKER_SRC.read_text(),
         model=PI_MODEL,
-        env={"ANSWER_SLUG": ""},
+        # Must go through pi_env: the key is read from the Keychain, so it is
+        # not in os.environ and a plain dict here would leave the checker
+        # unauthenticated while the searcher worked.
+        env=pi_env(""),
     )
     try:
         session.prompt(prompt_text, on_event=on_event, timeout=timeout)
@@ -802,10 +836,14 @@ def main():
         print(f"Error: missing agent tools: {', '.join(str(m) for m in missing)}",
               file=sys.stderr)
         sys.exit(1)
-    if not os.environ.get("DEEPSEEK_API_KEY"):
-        print("Warning: DEEPSEEK_API_KEY is not set — pi will have no credentials "
-              "(auth.json does not apply, since PI_CODING_AGENT_DIR is redirected)",
-              file=sys.stderr)
+    if api_key():
+        src = "env" if os.environ.get(API_KEY_ENV) else f"keychain:{KEYCHAIN_SERVICE}"
+        print(f"Credentials: {API_KEY_ENV} from {src}")
+    else:
+        print(f"Warning: no {API_KEY_ENV} in the environment and no Keychain item "
+              f"for service '{KEYCHAIN_SERVICE}' — pi will have no credentials. "
+              f"(A global `pi /login` does not apply: PI_CODING_AGENT_DIR is "
+              f"redirected, so auth.json is not read.)", file=sys.stderr)
     print(f"Agent: pi --mode rpc, model {PI_MODEL}, state in {PI_STATE_DIR}/")
 
     # Collect and index PDFs from the working directory
