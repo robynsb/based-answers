@@ -162,7 +162,7 @@ class PipelineServer:
 
     def events_after(self, run_id: str, last_id: int) -> list:
         return self.db().execute(
-            "SELECT id, event, data FROM events WHERE run_id=? AND id>? ORDER BY id",
+            "SELECT id, event, data, ts FROM events WHERE run_id=? AND id>? ORDER BY id",
             (run_id, last_id),
         ).fetchall()
 
@@ -170,12 +170,16 @@ class PipelineServer:
 
     def emit(self, run_id: str, event: str, data: dict) -> int:
         db = self.db()
+        ts = time.time()
         cur = db.execute(
             "INSERT INTO events (run_id, event, data, ts) VALUES (?,?,?,?)",
-            (run_id, event, json.dumps(data), time.time()),
+            (run_id, event, json.dumps(data), ts),
         )
         db.commit()
-        msg = {"id": cur.lastrowid, "event": event, "data": data}
+        # `ts` goes to the browser as well as the DB: the per-round timers are
+        # computed from event timestamps, so a replayed run shows the real
+        # durations it took rather than restarting the clock at page load.
+        msg = {"id": cur.lastrowid, "event": event, "data": data, "ts": ts}
         with self._lock:
             subscribers = list(self._clients.get(run_id, []))
         for q in subscribers:
@@ -344,7 +348,8 @@ class PipelineServer:
                     sock_conn.send(json.dumps(msg))
 
                 for row in server.events_after(run_id, last_id):
-                    send({"id": row["id"], "event": row["event"], "data": json.loads(row["data"])})
+                    send({"id": row["id"], "event": row["event"],
+                          "data": json.loads(row["data"]), "ts": row["ts"]})
 
                 while not saw_terminal:
                     try:

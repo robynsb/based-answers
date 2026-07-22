@@ -111,6 +111,43 @@ class TestTokenLedger(LedgerCase):
         self.assertEqual(snap["by_agent"]["a-new-agent"]["total"], 100)
         self.assertEqual(snap["total"]["total"], 100)
 
+    def test_round_split_and_run_total_agree(self):
+        self.ledger.set_round(1)
+        self.ledger.add("searcher", pi_rpc.message_usage(message_end(input=100, cost=0.01)))
+        self.ledger.add("semantic", pi_rpc.message_usage(message_end(input=10, cost=0.002)))
+        self.ledger.set_round(2)
+        self.ledger.add("searcher", pi_rpc.message_usage(message_end(input=200, cost=0.02)))
+
+        snap = self.ledger.snapshot()
+        self.assertAlmostEqual(snap["by_round"]["1"]["by_agent"]["searcher"]["cost"], 0.01)
+        self.assertAlmostEqual(snap["by_round"]["1"]["total"]["cost"], 0.012)
+        self.assertAlmostEqual(snap["by_round"]["2"]["total"]["cost"], 0.02)
+        self.assertNotIn("semantic", snap["by_round"]["2"]["by_agent"])
+        # The split is a partition of the run, not a second, separate tally
+        self.assertAlmostEqual(
+            sum(r["total"]["cost"] for r in snap["by_round"].values()),
+            snap["total"]["cost"])
+
+    def test_round_keys_are_strings(self):
+        """They cross JSON, where an int key comes back as a string anyway —
+        one form, so the browser cannot look up the wrong one."""
+        self.ledger.set_round(3)
+        self.ledger.add("searcher", pi_rpc.message_usage(message_end(input=1)))
+        self.assertEqual(list(self.ledger.snapshot()["by_round"]), ["3"])
+
+    def test_a_round_with_no_calls_still_appears(self):
+        """Its timer and 'no model calls yet' still need somewhere to hang."""
+        self.ledger.set_round(1)
+        self.assertIn("1", self.ledger.snapshot()["by_round"])
+
+    def test_usage_before_any_round_is_still_counted_in_the_run(self):
+        """Nothing spends before round 1 today, but losing money silently is
+        the wrong failure if something ever does."""
+        self.ledger.add("searcher", pi_rpc.message_usage(message_end(input=100, cost=0.01)))
+        snap = self.ledger.snapshot()
+        self.assertAlmostEqual(snap["total"]["cost"], 0.01)
+        self.assertEqual(snap["by_round"], {})
+
     def test_observer_only_records_message_end(self):
         observe = self.ledger.observer("coherence")
         observe({"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "delta": "x"}})

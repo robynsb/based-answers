@@ -111,13 +111,19 @@ def emit_line(run_id: str | None, agent: str, line: str, extra: dict | None = No
 
 
 class TokenLedger:
-    """Cumulative token and cost totals for one run, split by agent.
+    """Token and cost totals for one run, split by agent and by round.
 
     Every assistant message from every pi session in the run lands here, so
     the figures cover the whole question: the searcher's session across all
     rounds, plus a fresh session for each semantic and coherence check.
-    Emits the full running total each time, so a browser that reconnects or
-    replays only needs the latest `tokens` event.
+    Emits the full running state each time, so a browser that reconnects or
+    replays only needs the latest `tokens` event — which is why the round
+    split is a map of complete per-round totals rather than a delta.
+
+    `set_round()` is what attributes usage: the searcher's one session spans
+    every round, so nothing about a `message_end` says which round it belongs
+    to. The pipeline is a sequence of rounds on one thread, so the ledger is
+    simply told when each one starts.
     """
 
     def __init__(self, run_id: str | None, emit_fn=None):
@@ -126,6 +132,8 @@ class TokenLedger:
         self._lock = threading.Lock()
         # Buckets are created on demand, so a new agent needs no roster edit.
         self.by_agent: dict[str, dict] = {}
+        self.by_round: dict[int, dict[str, dict]] = {}
+        self.round = 0
 
     @staticmethod
     def _zero() -> dict:
@@ -134,13 +142,23 @@ class TokenLedger:
         d["calls"] = 0
         return d
 
+    def set_round(self, round_num: int):
+        with self._lock:
+            self.round = round_num
+            self.by_round.setdefault(round_num, {})
+
     def add(self, agent: str, usage: dict):
         with self._lock:
-            bucket = self.by_agent.setdefault(agent, self._zero())
-            for k in pi_rpc.USAGE_FIELDS:
-                bucket[k] += usage.get(k, 0)
-            bucket["cost"] += usage.get("cost", 0.0)
-            bucket["calls"] += 1
+            buckets = [self.by_agent.setdefault(agent, self._zero())]
+            if self.round:
+                buckets.append(
+                    self.by_round.setdefault(self.round, {})
+                    .setdefault(agent, self._zero()))
+            for bucket in buckets:
+                for k in pi_rpc.USAGE_FIELDS:
+                    bucket[k] += usage.get(k, 0)
+                bucket["cost"] += usage.get("cost", 0.0)
+                bucket["calls"] += 1
             payload = self.snapshot()
         self._emit(self.run_id, "tokens", payload)
 
@@ -151,12 +169,24 @@ class TokenLedger:
             out["total"] = sum(b[k] for k in pi_rpc.USAGE_FIELDS)
             return out
 
-        run_total = self._zero()
-        for bucket in self.by_agent.values():
-            for k in list(pi_rpc.USAGE_FIELDS) + ["cost", "calls"]:
-                run_total[k] += bucket[k]
-        return {"by_agent": {a: with_total(b) for a, b in self.by_agent.items()},
-                "total": with_total(run_total)}
+        def summed(buckets):
+            out = self._zero()
+            for bucket in buckets:
+                for k in list(pi_rpc.USAGE_FIELDS) + ["cost", "calls"]:
+                    out[k] += bucket[k]
+            return with_total(out)
+
+        return {
+            "by_agent": {a: with_total(b) for a, b in self.by_agent.items()},
+            "total": summed(self.by_agent.values()),
+            # String keys: this crosses JSON, where an int key would come back
+            # as a string anyway and the two forms would drift.
+            "by_round": {
+                str(n): {"by_agent": {a: with_total(b) for a, b in agents.items()},
+                         "total": summed(agents.values())}
+                for n, agents in sorted(self.by_round.items())
+            },
+        }
 
     def observer(self, agent: str):
         """An on_event hook that records usage for `agent`."""
@@ -820,6 +850,9 @@ def _search_rounds(session, slug: str, question: str, pdf_info: list[dict],
         if rounds:
             label += " (with feedback)"
         install_banner(f"{run_tag(run_id)}{label}")
+        # Before the phase event, so any usage recorded in this round — the
+        # searcher's and both checkers' — is attributed to it.
+        ledger.set_round(round_num)
         emit(run_id, "phase", {"phase": "searching", "round": round_num})
 
         # One watcher per round, baselined on the previous round's leftover file

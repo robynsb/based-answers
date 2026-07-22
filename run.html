@@ -66,7 +66,8 @@
     font-size: 0.95rem;
   }
   .status-bar .round { font-weight: 700; color: var(--accent); white-space: nowrap; }
-  /* Cumulative for the whole question, so it sits outside the round navigation */
+  /* Cost and elapsed time for the round being viewed, with the run's own
+     totals on the right — so switching rounds changes what this reads. */
   .token-bar {
     display: none;
     flex-wrap: wrap;
@@ -80,12 +81,15 @@
     color: var(--muted);
   }
   .token-bar.on { display: flex; }
-  .token-bar .tk-label { font-weight: 600; color: var(--text); }
+  .token-bar .tk-label { font-weight: 600; color: var(--text); white-space: nowrap; }
   .token-bar .tk-agent { white-space: nowrap; }
   .token-bar .tk-agent b { font-weight: 600; color: var(--text); }
   .token-bar .tk-cost { color: var(--muted); }
+  .token-bar .tk-time { font-variant-numeric: tabular-nums; color: var(--text); }
+  .token-bar .tk-time.live { color: var(--accent); }
   .token-bar .tk-total { margin-left: auto; white-space: nowrap; color: var(--text); }
   .token-bar .tk-total b { color: var(--accent); }
+  .token-bar .tk-none { font-style: italic; }
   .status-bar.passed { border-color: var(--ok); }
   .status-bar.passed .phase { color: var(--ok); font-weight: 600; }
   .status-bar.exhausted { border-color: var(--warn); }
@@ -335,6 +339,7 @@ let currentRound = 0;   // latest round the pipeline has reached
 let viewing = 0;        // round currently displayed
 let terminal = null;
 let lastId = 0;
+let tokens = null;      // latest `tokens` event payload, the whole run's state
 
 function roundData(n) {
   if (!rounds.has(n)) {
@@ -346,6 +351,12 @@ function roundData(n) {
       claims: new Map(),  // index -> {claim, status, stream}
       det: null,          // {status, output}
       coh: null,          // {status, stream, output}
+      // Event timestamps, in seconds, straight from the server. A finished
+      // round's duration is t1 - t0; the live round runs to now. Taking them
+      // from the events rather than the clock means a replayed run shows how
+      // long it actually took, not how long the page has been open.
+      t0: null,
+      t1: null,
     });
   }
   return rounds.get(n);
@@ -477,6 +488,8 @@ function updateNav() {
   nav.classList.toggle("history", viewing !== currentRound);
   $("nav-prev").disabled = viewing <= 1;
   $("nav-next").disabled = viewing >= currentRound;
+  // The usage bar reports the viewed round, so it follows the navigation
+  renderTokens();
 }
 
 $("nav-prev").addEventListener("click", () => {
@@ -501,6 +514,17 @@ function handle(msg) {
   if (!msg.id) return; // ping
   lastId = msg.id;
   const d = msg.data || {};
+
+  // Every event stamps the round it lands in, so a round's span is the first
+  // and last event seen for it — no separate round-start/end event needed.
+  if (msg.ts) {
+    const n = (msg.event === "phase" && d.round) ? d.round : currentRound;
+    if (n) {
+      const r = roundData(n);
+      if (r.t0 === null) r.t0 = msg.ts;
+      r.t1 = msg.ts;
+    }
+  }
 
   if (msg.event === "phase") {
     const phase = d.phase;
@@ -609,7 +633,8 @@ function handle(msg) {
       window.renderAllPreviews?.();
     }
   } else if (msg.event === "tokens") {
-    renderTokens(d);
+    tokens = d;
+    renderTokens();
   }
   // "feedback" events are intentionally not displayed: the feedback text
   // appears in the next round's searcher stream instead
@@ -629,22 +654,70 @@ function money(n) {
   return "$" + n.toFixed(4);
 }
 
-// Each `tokens` event carries the full running total, so the bar is rebuilt
-// rather than incremented — replay after a reload lands on the same state.
-function renderTokens(d) {
+// Durations read as "how long did that take", so the largest unit leads and
+// sub-second precision is noise at these timescales.
+function duration(sec) {
+  if (sec == null || !isFinite(sec) || sec < 0) return "—";
+  const s = Math.floor(sec);
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), r = s % 60;
+  if (h) return `${h}h ${String(m).padStart(2, "0")}m`;
+  if (m) return `${m}m ${String(r).padStart(2, "0")}s`;
+  return `${r}s`;
+}
+
+// A round that is still going runs to now; a finished one stops at its last
+// event, so history keeps the duration it actually took.
+function roundElapsed(n) {
+  const r = rounds.get(n);
+  if (!r || r.t0 === null) return null;
+  const live = n === currentRound && !terminal;
+  return (live ? Date.now() / 1000 : r.t1) - r.t0;
+}
+
+function runElapsed() {
+  const first = rounds.get(1);
+  if (!first || first.t0 === null) return null;
+  let last = first.t1;
+  for (const r of rounds.values()) if (r.t1 !== null && r.t1 > last) last = r.t1;
+  return (terminal ? last : Date.now() / 1000) - first.t0;
+}
+
+// The bar shows the round being *viewed*, so it changes with the navigation.
+// Each `tokens` event carries the full state (including the per-round split),
+// so this is rebuilt from the latest one rather than incremented — replay
+// after a reload lands in the same place.
+//
+// Deliberately no token counts. Summing `input` across a session counts the
+// transcript once per API call, so the figure runs to millions and means
+// nothing to a reader; cost and call count are the same information in units
+// that do.
+function renderTokens() {
   const bar = $("token-bar");
-  if (!bar || !d || !d.total) return;
-  const names = Object.keys(d.by_agent || {})
-    .sort((a, b) => (AGENT_ORDER.indexOf(a) + 1 || 99) - (AGENT_ORDER.indexOf(b) + 1 || 99));
-  const per = names
-    .filter(a => d.by_agent[a]?.calls)
-    .map(a => {
-      const b = d.by_agent[a];
-      return `<span class="tk-agent">${a} <b>${b.total.toLocaleString()}</b>`
-           + ` <span class="tk-cost">${money(b.cost)} · ${b.calls} call${b.calls === 1 ? "" : "s"}</span></span>`;
-    }).join("");
-  bar.innerHTML = `<span class="tk-label">Tokens</span>${per}`
-    + `<span class="tk-total">total <b>${d.total.total.toLocaleString()}</b> · ${money(d.total.cost)}</span>`;
+  if (!bar) return;
+  const n = viewing || currentRound;
+  if (!n) return;
+
+  const usage = tokens?.by_round?.[String(n)];
+  const agents = usage?.by_agent || {};
+  const names = Object.keys(agents)
+    .sort((a, b) => (AGENT_ORDER.indexOf(a) + 1 || 99) - (AGENT_ORDER.indexOf(b) + 1 || 99))
+    .filter(a => agents[a]?.calls);
+
+  const per = names.length
+    ? names.map(a => {
+        const b = agents[a];
+        return `<span class="tk-agent">${a} <b>${money(b.cost)}</b>`
+             + ` <span class="tk-cost">${b.calls} call${b.calls === 1 ? "" : "s"}</span></span>`;
+      }).join("")
+    : `<span class="tk-none">no model calls yet</span>`;
+
+  const live = n === currentRound && !terminal;
+  bar.innerHTML =
+      `<span class="tk-label">Round ${n}</span>`
+    + `<span class="tk-time${live ? " live" : ""}">${duration(roundElapsed(n))}</span>`
+    + per
+    + `<span class="tk-total">run ${duration(runElapsed())}`
+    + ` · <b>${money(tokens?.total?.cost)}</b></span>`;
   bar.classList.add("on");
 }
 
@@ -658,6 +731,10 @@ function connect() {
 viewing = currentRound = 0;
 rebuild();
 connect();
+// The elapsed times are the only thing on the page that changes without an
+// event, so they need their own tick. renderTokens() rebuilds from state and
+// is idempotent, so a tick after the run ends is a no-op.
+setInterval(renderTokens, 1000);
 </script>
 {% endif %}
 
