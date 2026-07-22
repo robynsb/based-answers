@@ -225,18 +225,87 @@ def normalize_for_match(text: str) -> tuple[str, list[int]]:
     return "".join(out), idx_map
 
 
+# ── Line addressing ─────────────────────────────────────────────────────
+#
+# A citation names the lines it quotes rather than reproducing their text, so
+# the quote is verbatim by construction and the agent never retypes a passage
+# it has already read. Everything that resolves, prints or verifies a line
+# span goes through the three functions below, so the numbering the agent sees
+# in a search result is the numbering `write_answer` and the verifier resolve.
+
+
+def page_text(data: dict, page: int) -> str | None:
+    """The page's cached text: its chunks joined with a single newline."""
+    chunks = [c["text"] for c in data["chunks"] if c["page"] == page]
+    return "\n".join(chunks) if chunks else None
+
+
+def page_lines(data: dict, page: int) -> list[str] | None:
+    """The page's text as the lines a citation span addresses (1-based)."""
+    text = page_text(data, page)
+    return text.split("\n") if text is not None else None
+
+
+def resolve_span(data: dict, page: int, first: int, last: int) -> str:
+    """Return lines `first`..`last` (inclusive, 1-based) of `page`.
+
+    Raises ValueError naming what is actually available, since the message
+    goes back to the agent as the tool result it has to act on.
+    """
+    lines = page_lines(data, page)
+    if lines is None:
+        raise ValueError(f"page {page} has no text in {data['file']}")
+    if first < 1 or last < first:
+        raise ValueError(
+            f"lines [{first}, {last}] is not a range — need 1 <= first <= last")
+    if last > len(lines):
+        raise ValueError(
+            f"page {page} has {len(lines)} lines, so lines [{first}, {last}] "
+            f"runs past its end")
+    return "\n".join(lines[first - 1:last])
+
+
+def _chunk_start_lines(data: dict) -> list[int]:
+    """The 1-based line each chunk starts at within its own page.
+
+    Chunks are stored grouped by page in reading order, and `page_text` joins
+    them with one newline, so a page's line numbering is just a running count
+    over its chunks.
+    """
+    starts = []
+    cursor: dict[int, int] = {}
+    for chunk in data["chunks"]:
+        page = chunk["page"]
+        start = cursor.get(page, 1)
+        starts.append(start)
+        cursor[page] = start + chunk["text"].count("\n") + 1
+    return starts
+
+
+def _span_of_window(text: str, start_line: int, start: int, end: int) -> list[int]:
+    """The [first, last] page lines a chunk-relative char window covers."""
+    first = start_line + text.count("\n", 0, start)
+    last = start_line + text.count("\n", 0, max(start, end - 1))
+    return [first, last]
+
+
 def find_matches(data: dict, query: str, context_chars: int = 300) -> list[dict]:
     """Find every chunk matching query, returning all of them (no limit) as
-    [{"page", "snippet"}, ...]. Shared by the pdf_search CLI/tool and by
-    verify-citations.py, which reruns a search_result citation's query
-    against the same cache to confirm the claimed results are complete."""
+    [{"page", "lines", "snippet"}, ...]. Shared by the pdf_search CLI/tool and
+    by verify-citations.py, which reruns a search_result citation's query
+    against the same cache to confirm the claimed results are complete.
+
+    `lines` is the [first, last] span the snippet occupies on its page, so a
+    hit the agent likes can be cited straight back as a quote without it
+    having to go look the passage up again."""
     norm_query, _ = normalize_for_match(query)
     norm_query = norm_query.strip()
     if not norm_query:
         return []
     pattern = re.compile(re.escape(norm_query), re.IGNORECASE)
+    starts = _chunk_start_lines(data)
     matches = []
-    for chunk in data["chunks"]:
+    for chunk, start_line in zip(data["chunks"], starts):
         text = chunk["text"]
         norm_text, idx_map = normalize_for_match(text)
         match = pattern.search(norm_text)
@@ -254,6 +323,7 @@ def find_matches(data: dict, query: str, context_chars: int = 300) -> list[dict]
                 snippet = snippet + "..."
             matches.append({
                 "page": chunk["page"],
+                "lines": _span_of_window(text, start_line, start, end),
                 "snippet": snippet,
             })
     return matches
@@ -338,7 +408,8 @@ def find_distinct_matches(data: dict, pattern: str, context_chars: int = 150,
         return {"error": "invalid_pattern", "detail": str(e)}
 
     seen: dict[str, dict] = {}
-    for chunk in data["chunks"]:
+    starts = _chunk_start_lines(data)
+    for chunk, start_line in zip(data["chunks"], starts):
         text = chunk["text"]
         norm_text, idx_map = normalize_for_match(text)
         for m in compiled.finditer(norm_text):
@@ -354,7 +425,12 @@ def find_distinct_matches(data: dict, pattern: str, context_chars: int = 150,
                 snippet = "..." + snippet
             if end < len(text):
                 snippet = snippet + "..."
-            seen[matched] = {"match": matched, "page": chunk["page"], "snippet": snippet}
+            seen[matched] = {
+                "match": matched,
+                "page": chunk["page"],
+                "lines": _span_of_window(text, start_line, start, end),
+                "snippet": snippet,
+            }
             if len(seen) > max_matches:
                 return {"error": "too_broad", "count": len(seen)}
 
@@ -558,7 +634,7 @@ def cmd_search_regex(data: dict, pattern: str, context_chars: int = 150, max_mat
         label = m["match"]
         if len(label) > MATCH_LABEL_CHARS:
             label = label[:MATCH_LABEL_CHARS] + f"... [{len(m['match'])} chars]"
-        print(f"--- {label} (page {m['page']}) ---")
+        print(f"--- {label} (page {m['page']} lines {m['lines'][0]}-{m['lines'][1]}) ---")
         print(m["snippet"])
         print()
     for note in regex_notes(pattern, matches, data):
@@ -573,21 +649,24 @@ def cmd_search(data: dict, query: str, limit: int = 10, context_chars: int = 300
         return
 
     for m in matches[:limit]:
-        print(f"--- Page {m['page']} ---")
+        print(f"--- Page {m['page']} lines {m['lines'][0]}-{m['lines'][1]} ---")
         print(m["snippet"])
         print()
 
 
 def cmd_get(data: dict, page_nums: list[int]):
-    page_set = set(page_nums)
-    chunks_on_pages = [c for c in data["chunks"] if c["page"] in page_set]
-    page_texts = {}
-    for c in chunks_on_pages:
-        page_texts.setdefault(c["page"], []).append(c["text"])
-
-    for page in sorted(page_texts):
-        print(f"=== Page {page} ===")
-        print("\n\n".join(page_texts[page]))
+    """Print whole pages with their line numbers — the numbers a quote
+    citation's span refers to, so the agent picks the lines it wants off
+    exactly the text it is reading."""
+    for page in sorted(set(page_nums)):
+        lines = page_lines(data, page)
+        if lines is None:
+            print(f"=== Page {page} (no text) ===")
+            print()
+            continue
+        print(f"=== Page {page} ({len(lines)} lines) ===")
+        for n, line in enumerate(lines, 1):
+            print(f"{n:4d}| {line}")
         print()
 
 
