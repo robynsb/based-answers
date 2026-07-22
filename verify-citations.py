@@ -635,6 +635,38 @@ def _check_search_result_regex(cit: dict) -> dict:
     return {"found": False, "reason": " -- ".join(parts)}
 
 
+GUESS_LIST_MIN = 3
+ADVISORY_PREFIX = "ADVISORY: "
+
+
+def guess_list_advisory(answer: dict) -> str | None:
+    """Flag a claim whose entire evidence is literal searches that found
+    nothing — "I guessed N names and none existed, therefore no name exists".
+
+    That argument does not get stronger with N, and the semantic checker
+    responds to it by naming an N+1th thing to try, which is a different
+    objection every round: the searcher patches the list instead of changing
+    method, and three rounds go by. A fixed message, delivered the first time
+    the shape appears, is worth more than a better objection later.
+
+    Advisory rather than a failure on purpose. The rule reads only the shape
+    of the argument, never what the queries say, so it cannot tell a genuinely
+    exhaustive handful of probes from a hopeful one — and the checker, which
+    can, still has the final say.
+    """
+    citations = answer.get("citations") or []
+    if len(citations) < GUESS_LIST_MIN:
+        return None
+    for c in citations:
+        if (not isinstance(c, dict) or c.get("type") != "search_result"
+                or c.get("mode") == "regex" or (c.get("results") or [])):
+            return None
+    return (f"this claim's only evidence is {len(citations)} literal searches that each found "
+            f"nothing. An absence claim cannot be established by listing queries that returned "
+            f"no results — there is always another spelling. Use a mode: regex citation to "
+            f"enumerate what the source does contain, or cite a passage that states the absence.")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Deterministic citation verifier"
@@ -672,8 +704,13 @@ def main():
         print("-" * 130)
         header_printed = True
 
+    advisories = []
+
     for answer in data.get("answers", []):
         claim = answer.get("claim", "")
+        note = guess_list_advisory(answer)
+        if note:
+            advisories.append((claim, note))
         for cit in answer.get("citations", []):
             total += 1
             is_search_result = cit.get("type") == "search_result"
@@ -741,6 +778,11 @@ def main():
         if header_printed:
             print(f"\n{'=' * 130}")
         print(f"Total: {total}  |  Passed: {passed}  |  Failed: {failed}")
+        # Advisories never change the exit code — they are guidance carried
+        # into the next round's feedback, not verdicts on the citations.
+        for claim, note in advisories:
+            short = claim[:70] + ".." if len(claim) > 70 else claim
+            print(f'{ADVISORY_PREFIX}"{short}" — {note}')
 
     if args.format == "json":
         print(json.dumps(results, indent=2))

@@ -820,6 +820,20 @@ def search_loop(slug: str, question: str, pdf_info: list[dict], rounds: list[dic
               f"(${t['cost']:.4f})", flush=True)
 
 
+def deterministic_advisories(output: str) -> str:
+    """The ADVISORY lines from the verifier's output, as a feedback block.
+
+    An advisory is guidance about the *shape* of an argument, so it does not
+    fail the deterministic check and the round carries on. But a round that
+    later fails semantically sends only the checker's objection back, and the
+    advisory — which is usually the reason the objection exists — would never
+    reach the agent. Appending it to whatever feedback the round produces is
+    what makes it worth emitting at all.
+    """
+    lines = [l for l in output.splitlines() if l.startswith("ADVISORY: ")]
+    return "\n\nAlso note:\n" + "\n".join(lines) if lines else ""
+
+
 def searcher_produced_nothing(ledger: "TokenLedger") -> bool:
     """True when the search agent completed calls but returned zero tokens.
 
@@ -908,6 +922,7 @@ def _search_rounds(session, slug: str, question: str, pdf_info: list[dict],
             continue
 
         print(f"  {run_tag(run_id)}[PASS] {yaml_path.name} — all citations verified\n")
+        advisories = deterministic_advisories(det["output"])
 
         # ── Semantic checkers ──
         emit(run_id, "phase", {"phase": "semantic", "round": round_num})
@@ -917,7 +932,7 @@ def _search_rounds(session, slug: str, question: str, pdf_info: list[dict],
             sf = semantic_failures[0]
             feedback = (f"Semantic checker FAILED for claim: {sf['claim']}\n"
                         f"(checking stopped at the first failing claim; later claims were not checked)\n"
-                        f"Checker output:\n{sf['output']}")
+                        f"Checker output:\n{sf['output']}{advisories}")
             rounds.append({"round": round_num, "feedback": feedback})
             emit(run_id, "feedback", {"round": round_num, "text": feedback})
             print(f"  {run_tag(run_id)}Restarting with semantic failure on claim: {sf['claim'][:80]}...\n")
@@ -929,7 +944,7 @@ def _search_rounds(session, slug: str, question: str, pdf_info: list[dict],
         emit(run_id, "check-result",
              {"check": "coherence", "passed": coherence["passed"], "output": coherence["output"][:2000]})
         if not coherence["passed"]:
-            feedback = f"Coherence checker FAILED:\n{coherence['output']}"
+            feedback = f"Coherence checker FAILED:\n{coherence['output']}{advisories}"
             rounds.append({"round": round_num, "feedback": feedback})
             emit(run_id, "feedback", {"round": round_num, "text": feedback})
             print(f"  {run_tag(run_id)}Restarting with coherence failure...\n")
