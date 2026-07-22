@@ -259,6 +259,57 @@ def find_matches(data: dict, query: str, context_chars: int = 300) -> list[dict]
     return matches
 
 
+_GENERATIVE_CHARS = set("[.*+?{")
+_GENERATIVE_ESCAPES = set("dDwWsS")
+
+
+def spelled_out_literals(pattern: str) -> list[str] | None:
+    """Return the literal alternatives a pattern spells out, or None if the
+    pattern can match anything it does not already contain.
+
+    A pattern with no character class, quantifier or wildcard — `a|b|c` — is
+    an alternation of literals, and matches exactly those literals and
+    nothing else. Used as an enumeration it is circular: it is offered as
+    proof that a, b and c are the only members of a family, but it could
+    never have found a fourth. The set comparison in rule 3 can't see this,
+    because the rerun uses the same pattern and agrees; nor can the digit
+    repair, which has no character class to widen.
+    """
+    depth_chars = []
+    i, n = 0, len(pattern)
+    while i < n:
+        ch = pattern[i]
+        if ch == "\\":
+            nxt = pattern[i + 1] if i + 1 < n else ""
+            if nxt in _GENERATIVE_ESCAPES:
+                return None
+            depth_chars.append(nxt)          # an escaped literal
+            i += 2
+            continue
+        if ch in _GENERATIVE_CHARS:
+            return None
+        depth_chars.append(ch)
+        i += 1
+
+    # Only literals, groups, anchors and | are left; split on the top-level |
+    branches, current, depth = [], [], 0
+    for ch in depth_chars:
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth = max(0, depth - 1)
+        elif ch == "|" and depth == 0:
+            branches.append("".join(current))
+            current = []
+            continue
+        else:
+            current.append(ch)
+            continue
+        current.append(ch)
+    branches.append("".join(current))
+    return [b for b in branches if b]
+
+
 def find_distinct_matches(data: dict, pattern: str, context_chars: int = 150,
                           max_matches: int = 100) -> dict:
     """Enumerate every distinct string a regex matches anywhere in the doc —
@@ -310,6 +361,51 @@ def find_distinct_matches(data: dict, pattern: str, context_chars: int = 150,
     return {"matches": list(seen.values())}
 
 
+# A match longer than this is shown truncated in the result header: a greedy
+# `.*` produces multi-hundred-character "names" that bury the actual output.
+MATCH_LABEL_CHARS = 60
+# Above this, a match is running text rather than a name — see regex_notes.
+SPAN_MATCH_CHARS = 80
+
+
+def regex_notes(pattern: str, matches: list[dict]) -> list[str]:
+    """Warnings about a pattern that ran but did not do what it looks like.
+
+    `search_regex` returns every *distinct matched string*, which is not what
+    a pattern written as prose-search means, and two ways of getting this
+    wrong are common enough to answer in the output rather than leave the
+    agent to infer from a confusing result:
+
+    - A pattern with nothing variable in it (`pio_sm_get_`) can only match
+      itself, so a document full of such functions dedupes to one row whose
+      "name" is the prefix. Read literally that says the family has one
+      member, which is the opposite of the truth.
+    - `.` matches spaces and punctuation, so `pio.*pindir` matches from the
+      first `pio` on a page to the last `pindir`, and the distinct strings
+      are whole paragraphs. Dedup then means nothing, the page attribution
+      looks arbitrary, and the enumeration cannot be cited.
+    """
+    notes = []
+    literals = spelled_out_literals(pattern)
+    if literals is not None:
+        notes.append(
+            f"\nNote: {pattern!r} contains no character class, quantifier or wildcard, so it can "
+            f"only match the {len(literals)} literal string(s) it spells out — the matches above "
+            f"are pieces of the pattern itself, not the names that surround them. To enumerate a "
+            f"family, put a class and a quantifier around the part that varies, e.g. "
+            f"'{literals[0]}[a-z0-9_]*'.")
+    spans = [m for m in matches if len(m["match"]) > SPAN_MATCH_CHARS]
+    if spans:
+        longest = max(len(m["match"]) for m in spans)
+        notes.append(
+            f"\nNote: {len(spans)} of these matches are over {SPAN_MATCH_CHARS} characters long "
+            f"(longest {longest}), which means the pattern is capturing running text rather than "
+            f"names — '.' matches spaces and punctuation, so '.*' runs from the first match on a "
+            f"page to the last. Replace the '.*' with a class covering only the characters a name "
+            f"can contain, e.g. '[a-z0-9_]*'.")
+    return notes
+
+
 def cmd_search_regex(data: dict, pattern: str, context_chars: int = 150, max_matches: int = 100):
     result = find_distinct_matches(data, pattern, context_chars=context_chars, max_matches=max_matches)
     if "error" in result:
@@ -322,12 +418,19 @@ def cmd_search_regex(data: dict, pattern: str, context_chars: int = 150, max_mat
     matches = result["matches"]
     if not matches:
         print("No matches found.")
+        for note in regex_notes(pattern, matches):
+            print(note)
         return
     print(f"{len(matches)} distinct match(es):\n")
     for m in matches:
-        print(f"--- {m['match']} (page {m['page']}) ---")
+        label = m["match"]
+        if len(label) > MATCH_LABEL_CHARS:
+            label = label[:MATCH_LABEL_CHARS] + f"... [{len(m['match'])} chars]"
+        print(f"--- {label} (page {m['page']}) ---")
         print(m["snippet"])
         print()
+    for note in regex_notes(pattern, matches):
+        print(note)
 
 
 def cmd_search(data: dict, query: str, limit: int = 10, context_chars: int = 300):

@@ -472,55 +472,9 @@ def _check_enumeration_covers_digits(pattern: str, cache: dict,
     return {"found": False, "reason": " -- ".join(parts)}
 
 
-_GENERATIVE_CHARS = set("[.*+?{")
-_GENERATIVE_ESCAPES = set("dDwWsS")
-
-
-def _spelled_out_literals(pattern: str) -> list[str] | None:
-    """Return the literal alternatives a pattern spells out, or None if the
-    pattern can match anything it does not already contain.
-
-    A pattern with no character class, quantifier or wildcard — `a|b|c` — is
-    an alternation of literals, and matches exactly those literals and
-    nothing else. Used as an enumeration it is circular: it is offered as
-    proof that a, b and c are the only members of a family, but it could
-    never have found a fourth. The set comparison in rule 3 can't see this,
-    because the rerun uses the same pattern and agrees; nor can the digit
-    repair, which has no character class to widen.
-    """
-    depth_chars = []
-    i, n = 0, len(pattern)
-    while i < n:
-        ch = pattern[i]
-        if ch == "\\":
-            nxt = pattern[i + 1] if i + 1 < n else ""
-            if nxt in _GENERATIVE_ESCAPES:
-                return None
-            depth_chars.append(nxt)          # an escaped literal
-            i += 2
-            continue
-        if ch in _GENERATIVE_CHARS:
-            return None
-        depth_chars.append(ch)
-        i += 1
-
-    # Only literals, groups, anchors and | are left; split on the top-level |
-    branches, current, depth = [], [], 0
-    for ch in depth_chars:
-        if ch == "(":
-            depth += 1
-        elif ch == ")":
-            depth = max(0, depth - 1)
-        elif ch == "|" and depth == 0:
-            branches.append("".join(current))
-            current = []
-            continue
-        else:
-            current.append(ch)
-            continue
-        current.append(ch)
-    branches.append("".join(current))
-    return [b for b in branches if b]
+# The predicate lives in pdf-search.py so the search tool can warn about a
+# degenerate pattern at the point the agent writes it, not just here.
+_spelled_out_literals = _pdf_search.spelled_out_literals
 
 
 def _check_enumeration_is_general(pattern: str, actual_matches: set[str]) -> dict | None:
