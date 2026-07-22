@@ -256,6 +256,48 @@ def _split_match(citation_text: str, first_text: str, second_text: str,
     return prefix, suffix
 
 
+def check_spans(cit: dict, cache: dict) -> dict:
+    """Verify a citation that names its lines instead of reproducing them.
+
+    `resolve-answer.py` materialises the text from these spans, so this is a
+    re-resolution rather than a search: it confirms the file on disk still
+    says what the spans address, and nothing else. There is no leniency
+    ladder here and no cross-page special case — a passage interrupted by a
+    running header is simply two spans that skip it, and the text either
+    resolves identically or the file has been edited out from under the
+    extraction cache.
+    """
+    spans = cit.get("spans")
+    if not isinstance(spans, list) or not spans:
+        return {"found": False, "reason": "citation's 'spans' must be a non-empty list"}
+
+    parts = []
+    for span in spans:
+        if not isinstance(span, dict) or not all(
+                isinstance(span.get(k), int) for k in ("page", "from", "to")):
+            return {"found": False,
+                    "reason": f"each span needs integer 'page', 'from' and 'to': got {span!r}"}
+        try:
+            parts.append(_pdf_search.resolve_span(
+                cache, span["page"], span["from"], span["to"]))
+        except ValueError as e:
+            return {"found": False, "reason": f"span {span!r}: {e}"}
+
+    resolved = "\n".join(parts)
+    if resolved != cit.get("text"):
+        return {"found": False,
+                "reason": "citation text no longer matches the lines it cites — "
+                          "the answer file was edited by hand, or the source was "
+                          "re-indexed; re-cite the passage"}
+
+    if cit.get("page") != spans[0]["page"]:
+        return {"found": False,
+                "reason": f"citation's page {cit.get('page')} is not where its "
+                          f"first span starts (page {spans[0]['page']})"}
+
+    return {"found": True, "method": "spans"}
+
+
 def check_citation(citation_text: str, page: int, cache: dict) -> dict:
     chunks_on_page = [c for c in cache["chunks"] if c["page"] == page]
 
@@ -761,7 +803,16 @@ def main():
                 page = cit.get("page", 0)
                 cache = load_pdf_cache(source)
 
-                if len(cit_text) < MIN_CITATION_CHARS:
+                if cache is not None and cit.get("spans"):
+                    result = check_spans(cit, cache)
+                    if result["found"]:
+                        status = f"PASS ({result['method']})" if args.verbose else "PASS"
+                        passed += 1
+                    else:
+                        status = "FAIL"
+                        reason = result.get("reason", "Not found")
+                        failed += 1
+                elif len(cit_text) < MIN_CITATION_CHARS:
                     status = "FAIL"
                     reason = (f"Citation too short: {len(cit_text)} chars, minimum is "
                               f"{MIN_CITATION_CHARS}. Quote a longer contiguous passage "
