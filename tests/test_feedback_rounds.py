@@ -59,19 +59,42 @@ class TestBuildFeedbackMessage(unittest.TestCase):
 
 
 class TestWriteContext(unittest.TestCase):
-    def test_context_file_never_carries_a_feedback_history(self):
-        """Only round 1 writes it, and later rounds send the newest feedback
-        to the same session, so there is never a history to render."""
+    def _write(self, pdf_info=(), past_answers=()):
         with tempfile.TemporaryDirectory() as tmp:
             old = os.getcwd()
             os.chdir(tmp)
             try:
                 Path("answers").mkdir()
-                text = based_answers.write_context("slug", "q?", []).read_text()
+                for name, question in past_answers:
+                    (Path("answers") / name).write_text(
+                        f'question: "{question}"\nanswers: []\n')
+                return based_answers.write_context(
+                    "slug", "how does a state machine set pin directions?",
+                    list(pdf_info)).read_text()
             finally:
                 os.chdir(old)
-        self.assertIn("None yet. This is your first attempt.", text)
+
+    def test_context_file_never_carries_a_feedback_history(self):
+        """Only round 1 writes it, and later rounds send the newest feedback
+        to the same session, so there is never a history to render."""
+        text = self._write()
         self.assertNotIn("## Round", text)
+        self.assertNotIn("Feedback", text)
+
+    def test_the_question_and_the_sources_are_what_it_carries(self):
+        text = self._write(pdf_info=[{"file": "rp2040.pdf", "pages": 640}])
+        self.assertIn("how does a state machine set pin directions?", text)
+        self.assertIn("rp2040.pdf (640 pages)", text)
+
+    def test_past_answer_files_are_not_offered(self):
+        """The searcher has pdf_search, verify_citations and write_answer —
+        no read tool. Naming a file it cannot open is an instruction to do
+        something impossible, so the ranked shortlist is gone."""
+        text = self._write(past_answers=[
+            ("pin-directions-of-a-pio.yml", "how does a pio set pin directions?"),
+        ])
+        self.assertNotIn(".yml", text)
+        self.assertNotIn("how does a pio set pin directions?", text)
 
 
 if __name__ == "__main__":
