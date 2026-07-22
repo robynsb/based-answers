@@ -6,7 +6,9 @@ This is an agent harness for answering questions about PDFs which are treated as
 
 ## Demo
 
+https://github.com/user-attachments/assets/48c34111-0034-4531-8ed1-551b14fb9da4
 
+https://github.com/user-attachments/assets/8dde70d9-4ac3-4368-bde0-9e5cf685435a
 
 ## How it works
 
