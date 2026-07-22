@@ -17,17 +17,11 @@ nix develop "path:/Users/robin/.config/opencode/skills/citation-grounded-qa" -c 
 
 This indexes the CWD's `*.pdf`, starts Flask on an auto-assigned port (`--port` pins one, `--no-open` skips the browser), and serves until Ctrl-C. Questions are asked in the UI, never as CLI arguments.
 
-**Credentials**: the LLM is reached through pi, which needs `OPENROUTER_API_KEY` in its process environment. `api_key()` takes it from the environment if set, else from the macOS Keychain generic password under service `openrouter` (`BA_KEYCHAIN_SERVICE` overrides). A global `pi /login` does **not** apply — `PI_CODING_AGENT_DIR` is redirected (see below), so pi never reads `~/.pi/agent/auth.json`. Startup prints which source was used, never the key. The model is `openrouter/nvidia/nemotron-3-ultra-550b-a55b:free` (`BA_PI_MODEL` overrides) — free, 1M context, and **tool-calling capable**, which is the binding constraint: a searcher that cannot call `pdf_search` produces nothing. It is deliberately *not* in pi's bundled model table; that table is stale (its own `openrouter/free` router now 404s with "This model is unavailable for free"), and pi passes unknown `openrouter/…` slugs through to the API unchanged. When it starts 404ing, pick a replacement from `curl -s https://openrouter.ai/api/v1/models`, filtering for ids ending `:free` that list `tools` in `supported_parameters`.
+**Credentials**: the LLM is reached through pi, which needs `DEEPSEEK_API_KEY` in its process environment. `api_key()` takes it from the environment if set, else from the macOS Keychain generic password under service `deepseek` (`BA_KEYCHAIN_SERVICE` overrides). A global `pi /login` does **not** apply — `PI_CODING_AGENT_DIR` is redirected (see below), so pi never reads `~/.pi/agent/auth.json`. Startup prints which source was used, never the key. The model is `deepseek/deepseek-v4-flash` (`BA_PI_MODEL` overrides).
 
-**Free-tier failures are invisible to this pipeline.** A 404/429 from OpenRouter yields an agent that emits no assistant message at all: the run burns all 5 rounds on "No YAML file found" and reports `Tokens: 0 across 5 calls`. **Zero tokens is the signature of a transport/model failure, not of a bad answer** — check the model slug and the key before touching prompts.
+**A model swap is not just `BA_PI_MODEL`.** Any replacement must support **tool calls** — a searcher that cannot call `pdf_search` produces nothing — and pi's bundled model table is stale enough that being *in* it proves nothing: `openrouter/free` is listed there and 404s with "This model is unavailable for free". pi passes unknown slugs straight through to the provider, so the table is neither necessary nor sufficient; test the slug against the real tools before trusting it.
 
-Store the key in the Keychain once with:
-
-```sh
-security add-generic-password -U -s openrouter -a "$USER" -w
-```
-
-(`-w` with no value prompts for the key instead of putting it in shell history; `-U` updates an existing item.)
+**A rejected model looks like a bad answer, not an error.** When the provider 404s or 429s, the agent emits no assistant message: the run burns all 5 rounds on "No YAML file found" and reports `Tokens: 0 across 5 calls`. **Zero tokens is the signature of a transport/model/auth failure** — check the slug and the key before touching prompts.
 
 Tests (stdlib unittest, in `tests/`; `tests/support.py` loads the dash-named scripts as modules; `tests/fixtures/` holds the RP2040 datasheet + real answer YAMLs driving the end-to-end tests):
 

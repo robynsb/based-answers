@@ -56,20 +56,12 @@ SEARCH_TOOLS = ["pdf_search", "verify_citations", "write_answer"]
 
 # Everything pi would otherwise keep in ~/.pi lives here, under the CWD.
 PI_STATE_DIR = Path(".based-answers")
-# A zero-cost OpenRouter model that supports tool calls — the searcher is
-# useless without them. pi's bundled model table is stale (its own
-# `openrouter/free` router 404s), so this is a slug pi does not know about;
-# pi passes unknown openrouter slugs straight through, which is what makes
-# that possible. Re-check against
-# `curl -s https://openrouter.ai/api/v1/models` (filter `:free` with `tools`
-# in supported_parameters) when it starts 404ing.
-PI_MODEL = os.environ.get(
-    "BA_PI_MODEL", "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free")
+PI_MODEL = os.environ.get("BA_PI_MODEL", "deepseek/deepseek-v4-flash")
 
 # Credentials: the env var wins, else the macOS Keychain generic password
 # stored under this service name (`security add-generic-password -s ... -w`).
-API_KEY_ENV = "OPENROUTER_API_KEY"
-KEYCHAIN_SERVICE = os.environ.get("BA_KEYCHAIN_SERVICE", "openrouter")
+API_KEY_ENV = "DEEPSEEK_API_KEY"
+KEYCHAIN_SERVICE = os.environ.get("BA_KEYCHAIN_SERVICE", "deepseek")
 
 MAX_ROUNDS = 5
 # How often the draft answer file is checked for a rewrite while the agent runs
@@ -228,7 +220,7 @@ def derive_slug(question: str) -> str:
 
 @functools.cache
 def api_key() -> str | None:
-    """The OpenRouter key, from the environment or the macOS Keychain.
+    """The DeepSeek key, from the environment or the macOS Keychain.
 
     pi's own auth.json is not reachable here: PI_CODING_AGENT_DIR is
     redirected under the CWD so a run cannot touch global pi state, which
