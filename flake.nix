@@ -9,7 +9,7 @@
       let pkgs = nixpkgs.legacyPackages.${system};
       in {
         devShells.default = pkgs.mkShell {
-          packages = with pkgs; [ git (python3.withPackages (p: with p; [ pymupdf pyyaml jinja2 flask flask-sock simple-websocket ])) ];
+          packages = with pkgs; [ git pi-coding-agent (python3.withPackages (p: with p; [ pymupdf pyyaml jinja2 flask flask-sock simple-websocket ])) ];
         };
       });
 }
