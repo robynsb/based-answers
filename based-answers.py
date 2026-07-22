@@ -422,10 +422,19 @@ def run_checker(prompt_text: str, ledger: "TokenLedger", color: str = "",
 
 
 def run_semantic_checkers(yaml_path: Path, ledger: "TokenLedger",
-                          run_id: str | None = None) -> list[dict]:
+                          run_id: str | None = None,
+                          passed_claims: set[str] | None = None) -> list[dict]:
     """Check claims in order; stops at the first failing claim so the round
     goes straight back to the search agent (later claims stay unchecked —
-    they may shift anyway once the failing one is fixed)."""
+    they may shift anyway once the failing one is fixed).
+
+    `passed_claims` latches verbatim claim texts that already passed in an
+    earlier round of this run, keyed on the claim text alone. The checker is
+    an LLM and is not deterministic at the margin: an unchanged claim that
+    passed in round 3 can fail in round 5 and end an otherwise-succeeding run
+    purely on a re-roll. Re-judging it buys nothing — the searcher was told
+    nothing about it, so a second verdict is a new sample, not new evidence.
+    Passing the set in from the loop is what makes it survive across rounds."""
     try:
         import yaml as pyyaml
         with open(yaml_path) as f:
@@ -441,6 +450,14 @@ def run_semantic_checkers(yaml_path: Path, ledger: "TokenLedger",
     for i, a in enumerate(answers):
         claim = a.get("claim", "")
         if not claim:
+            continue
+        if passed_claims is not None and claim in passed_claims:
+            print(f"  {run_tag(run_id)}[PASS] Claim {i+1} (latched from an earlier round): {claim[:80]}")
+            emit_line(run_id, "semantic",
+                      "── SKIPPED ──\nThis claim's text is unchanged since a round in "
+                      "which it passed, so its earlier PASS is carried forward.\n"
+                      f"{'─' * 40}\n", {"claim": i})
+            emit(run_id, "claim-status", {"index": i, "claim": claim, "status": "pass"})
             continue
         emit(run_id, "claim-status", {"index": i, "claim": claim, "status": "checking"})
         citations = a.get("citations", [])
@@ -534,6 +551,8 @@ Rules: direct logical inference OK. Cross-source inference OK. PREVIOUS_CLAIMS m
         if not passed:
             failures.append({"claim": claim, "output": result[:2000]})
             return failures
+        if passed_claims is not None:
+            passed_claims.add(claim)
 
     return failures
 
@@ -785,6 +804,10 @@ def search_loop(slug: str, question: str, pdf_info: list[dict], rounds: list[dic
 def _search_rounds(session, slug: str, question: str, pdf_info: list[dict],
                    rounds: list[dict], pdf_dir: str,
                    run_id: str | None, ledger: "TokenLedger") -> tuple[Path | None, int]:
+    # Verbatim claim texts that have passed the semantic checker in any round
+    # of this run; lives for the whole run so a re-offered claim is not
+    # re-rolled against a nondeterministic judge (see run_semantic_checkers).
+    passed_claims: set[str] = set()
     for round_num in range(1, MAX_ROUNDS + 1):
         label = f"ROUND {round_num}/{MAX_ROUNDS}"
         if rounds:
@@ -845,7 +868,8 @@ def _search_rounds(session, slug: str, question: str, pdf_info: list[dict],
 
         # ── Semantic checkers ──
         emit(run_id, "phase", {"phase": "semantic", "round": round_num})
-        semantic_failures = run_semantic_checkers(yaml_path, ledger, run_id=run_id)
+        semantic_failures = run_semantic_checkers(yaml_path, ledger, run_id=run_id,
+                                                  passed_claims=passed_claims)
         if semantic_failures:
             sf = semantic_failures[0]
             feedback = (f"Semantic checker FAILED for claim: {sf['claim']}\n"

@@ -385,6 +385,93 @@ def _check_search_result_literal(cit: dict) -> dict:
     return {"found": False, "reason": " -- ".join(parts)}
 
 
+def _digit_permissive_variant(pattern: str) -> str | None:
+    """Return `pattern` with `0-9` added to every character class that cannot
+    already match a digit, or None if there is no such class.
+
+    An enumeration pattern written as an identifier family — say
+    `pio_sm_set_[a-z][a-z_]*` — silently gets the wrong answer on any name
+    with a digit in it. `pio_sm_set_pindirs_with_mask64` either comes back
+    truncated to `...with_mask` or, if the class sits before a required
+    suffix like `\\s*\\(`, drops out of the enumeration entirely. Neither
+    shows up in the claimed-vs-actual set comparison, because the rerun that
+    comparison uses is the same crippled pattern: both sides agree, and an
+    exhaustiveness claim built on a list that is missing exactly the name
+    that would refute it verifies clean.
+
+    Repairing the classes and re-enumerating turns that into evidence: if the
+    permissive pattern finds something the original could not, the original's
+    list was never exhaustive.
+    """
+    out = []
+    changed = False
+    i, n = 0, len(pattern)
+    while i < n:
+        ch = pattern[i]
+        if ch == "\\":
+            out.append(pattern[i:i + 2])
+            i += 2
+            continue
+        if ch != "[":
+            out.append(ch)
+            i += 1
+            continue
+        # Scan one character class, honouring escapes and a leading ]/^]
+        j = i + 1
+        if j < n and pattern[j] == "^":
+            j += 1
+        if j < n and pattern[j] == "]":
+            j += 1
+        while j < n and pattern[j] != "]":
+            j += 2 if pattern[j] == "\\" else 1
+        if j >= n:                       # unterminated — leave it to re.compile
+            out.append(pattern[i:])
+            break
+        body = pattern[i + 1:j]
+        negated = body.startswith("^")
+        has_digits = (negated
+                      or "0-9" in body
+                      or r"\d" in body
+                      or r"\w" in body
+                      or any(c.isdigit() for c in body))
+        if has_digits:
+            out.append(pattern[i:j + 1])
+        else:
+            out.append(f"[{body}0-9]")
+            changed = True
+        i = j + 1
+    return "".join(out) if changed else None
+
+
+def _check_enumeration_covers_digits(pattern: str, cache: dict,
+                                     actual_matches: set[str]) -> dict | None:
+    """Fail an enumeration whose character classes exclude digits when that
+    exclusion demonstrably changes the match set. Returns a failure dict, or
+    None when the pattern is fine (or the question can't be settled)."""
+    permissive = _digit_permissive_variant(pattern)
+    if permissive is None:
+        return None
+    regen = _pdf_search.find_distinct_matches(cache, permissive)
+    if regen.get("error"):
+        # A repaired pattern that is invalid or too broad proves nothing about
+        # the original; stay silent rather than fail on an artefact of repair.
+        return None
+    missed = sorted({m["match"] for m in regen["matches"]} - actual_matches)
+    # Matches the original truncated mid-name are the interesting half: report
+    # them first, since they read as "found it" while hiding the real symbol.
+    truncations = [m for m in missed if any(m.startswith(a) for a in actual_matches)]
+    if not missed:
+        return None
+    parts = [f"pattern {pattern!r} has a character class that cannot match digits, and that "
+             f"changes the result: {permissive!r} finds {len(missed)} string(s) it misses"]
+    if truncations:
+        parts.append(f"names the original truncated or dropped: {truncations}")
+    parts.append(f"missing from the enumeration: {missed}")
+    parts.append("an enumeration used for exhaustiveness must be able to match digits "
+                 "(e.g. [a-z0-9_] rather than [a-z_])")
+    return {"found": False, "reason": " -- ".join(parts)}
+
+
 def _check_search_result_regex(cit: dict) -> dict:
     """Verify a mode: regex search_result citation, which enumerates every
     DISTINCT string a regex pattern matches anywhere in the source (for
@@ -403,6 +490,10 @@ def _check_search_result_regex(cit: dict) -> dict:
        independent, unbounded rerun of the pattern actually finds across
        the whole document — catches both a fabricated symbol and one
        dropped to make an exhaustiveness claim look cleaner than it is.
+    4. The pattern itself must be able to match digits wherever it uses a
+       character class, if that makes any difference to what it finds —
+       see _check_enumeration_covers_digits, which catches the blind spot
+       rules 2 and 3 share.
     """
     pattern = cit.get("query")
     if not isinstance(pattern, str) or not pattern.strip():
@@ -456,7 +547,8 @@ def _check_search_result_regex(cit: dict) -> dict:
     actual_matches = {m["match"] for m in regen["matches"]}
 
     if claimed_matches == actual_matches:
-        return {"found": True}
+        return _check_enumeration_covers_digits(pattern, cache, actual_matches) \
+            or {"found": True}
 
     fabricated = sorted(claimed_matches - actual_matches)
     omitted = sorted(actual_matches - claimed_matches)
