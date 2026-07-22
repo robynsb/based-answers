@@ -219,6 +219,9 @@ MIN_CROSS_PAGE_CHARS = 20
 # Every citation must quote at least this many characters, so claims are backed
 # by full passages with surrounding context rather than bare snippets
 MIN_CITATION_CHARS = 200
+# Headroom over the minimum when offering a widened quote, so the agent isn't
+# handed something that lands one character above the threshold.
+SHORT_CITATION_MARGIN = 120
 
 
 def _split_match(citation_text: str, first_text: str, second_text: str,
@@ -315,6 +318,77 @@ def check_citation(citation_text: str, page: int, cache: dict) -> dict:
     return {"found": False, "reason": reason, "suggestions": suggestions}
 
 
+SUGGESTION_CHARS = 500
+
+
+def _expand_verbatim(text: str, page: int, cache: dict, target: int) -> str | None:
+    """The passage on `page` containing `text`, widened to about `target`
+    characters — or None if `text` isn't locatable there.
+
+    A citation that is on the page but too short is the one failure the agent
+    can't reason its way out of: it has the right passage and no way to know
+    which direction to grow it, so it guesses, re-runs, and guesses again.
+    The surrounding text is right there in the extraction.
+    """
+    norm_needle, _ = _pdf_search.normalize_for_match(text)
+    norm_needle = norm_needle.strip()
+    if not norm_needle:
+        return None
+    for chunk in (c for c in cache["chunks"] if c["page"] == page):
+        norm_chunk, idx_map = _pdf_search.normalize_for_match(chunk["text"])
+        at = norm_chunk.find(norm_needle)
+        if at == -1:
+            at = norm_chunk.lower().find(norm_needle.lower())
+        if at == -1:
+            continue
+        start = idx_map[at]
+        end = idx_map[min(at + len(norm_needle), len(idx_map)) - 1] + 1
+        pad = max(0, target - (end - start))
+        # Grow both ways, then spend whatever one side couldn't take on the other
+        left = max(0, start - pad // 2)
+        right = min(len(chunk["text"]), end + (pad - (start - left)))
+        left = max(0, left - (pad - (start - left) - (right - end)))
+        return chunk["text"][left:right]
+    return None
+
+
+def _verbatim_help(text: str, page: int, cache: dict) -> str:
+    """What to say when a snippet isn't on its page: where it actually is, or
+    the real text to copy.
+
+    "copy the snippet verbatim from pdf_search's output" is true and useless
+    — the agent believes it did, and cannot see how its copy differs. The
+    match ladder is lenient about whitespace, case, typography and
+    punctuation, so a failure here means the *content* diverges: a word
+    dropped, two results spliced, or a page number off by one. Run …-14
+    spent four verify calls on a single snippet with nothing but that
+    sentence to go on. Handing back the real text, verbatim and long enough
+    to paste, replaces the guessing with a copy.
+    """
+    for other in sorted({c["page"] for c in cache["chunks"]}):
+        if other == page:
+            continue
+        other_text = _page_text(cache, other)
+        if other_text and _match_in_text(text, other_text) is not None:
+            return (f" — it does appear on page {other}, so the text is right and the page "
+                    f"number is wrong: use {other}")
+
+    chunks_on_page = [c for c in cache["chunks"] if c["page"] == page]
+    if not chunks_on_page:
+        return f" — no text was extracted for page {page} at all; check the page number"
+
+    closest = _find_closest_matches(normalize_text(text), chunks_on_page, n=1)
+    if not closest:
+        return (f" — and nothing on page {page} resembles it; re-run the search and copy a "
+                f"snippet from its output")
+    sim, actual = closest[0]
+    excerpt = actual[:SUGGESTION_CHARS]
+    return (f" — the closest text on page {page} (similarity {sim:.2f}) is, verbatim between "
+            f"the markers:\n>>>{excerpt}<<<\nUse that text as the snippet. Whitespace, case, "
+            f"typography and punctuation are already matched leniently, so what differs is "
+            f"the wording itself — do not retype it")
+
+
 def check_search_result(cit: dict) -> dict:
     """Verify a search_result citation. `mode: regex` citations enumerate
     every distinct string a regex matches anywhere in the source (proving
@@ -365,8 +439,8 @@ def _check_search_result_literal(cit: dict) -> dict:
         page_text = _page_text(cache, r["page"])
         if page_text is None or _match_in_text(r["text"], page_text) is None:
             return {"found": False,
-                    "reason": f'result text for page {r["page"]} not found on that page — '
-                              f"copy the snippet verbatim from pdf_search's output"}
+                    "reason": f'result text for page {r["page"]} not found on that page'
+                              + _verbatim_help(r["text"], r["page"], cache)}
 
     actual = _pdf_search.find_matches(cache, query)
     claimed_pages = {r["page"] for r in results}
@@ -554,8 +628,8 @@ def _check_search_result_regex(cit: dict) -> dict:
         page_text = _page_text(cache, r["page"])
         if page_text is None or _match_in_text(r["text"], page_text) is None:
             return {"found": False,
-                    "reason": f'result text for page {r["page"]} not found on that page — '
-                              f"copy the snippet verbatim from pdf_search's output"}
+                    "reason": f'result text for page {r["page"]} not found on that page'
+                              + _verbatim_help(r["text"], r["page"], cache)}
         norm_text, _ = _pdf_search.normalize_for_match(r["text"])
         found_in_snippet = {m.group(0) for m in compiled.finditer(norm_text)}
         if r["match"] not in found_in_snippet:
@@ -692,6 +766,12 @@ def main():
                     reason = (f"Citation too short: {len(cit_text)} chars, minimum is "
                               f"{MIN_CITATION_CHARS}. Quote a longer contiguous passage "
                               f"around the supporting text")
+                    wider = (_expand_verbatim(cit_text, page, cache,
+                                              MIN_CITATION_CHARS + SHORT_CITATION_MARGIN)
+                             if cache else None)
+                    if wider and len(wider) >= MIN_CITATION_CHARS:
+                        reason += (f" — the same quote with its surroundings, verbatim between "
+                                   f"the markers:\n>>>{wider}<<<")
                     failed += 1
                 elif cache is None:
                     status = "FAIL"
