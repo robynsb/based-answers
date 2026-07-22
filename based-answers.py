@@ -244,16 +244,20 @@ def api_key() -> str | None:
     return r.stdout.strip() if r.returncode == 0 and r.stdout.strip() else None
 
 
-def pi_env(slug: str) -> dict:
+def pi_env(slug: str, question: str = "") -> dict:
     """Environment for a pi subprocess.
 
     ANSWER_SLUG tells the write_answer tool which file to overwrite, so the
-    searcher agent never sees or handles a slug. BA_PYTHON is this process's
-    own interpreter — already resolved, already carrying pymupdf/pyyaml — so
-    the tools invoke the scripts directly whatever provided that interpreter.
+    searcher agent never sees or handles a slug; ANSWER_QUESTION goes into
+    the answer file the same way, for the same reason — the pipeline knows
+    the question, so having the agent retype it is one more thing it can get
+    wrong. BA_PYTHON is this process's own interpreter — already resolved,
+    already carrying pymupdf/pyyaml — so the tools invoke the scripts
+    directly whatever provided that interpreter.
     """
     env = {
         "ANSWER_SLUG": slug,
+        "ANSWER_QUESTION": question,
         "BA_PYTHON": sys.executable,
         "BA_SKILL_DIR": str(SKILL_DIR),
     }
@@ -263,7 +267,8 @@ def pi_env(slug: str) -> dict:
     return env
 
 
-def open_session(prompt_src: Path, *, slug: str = "", tools=(), extensions=(),
+def open_session(prompt_src: Path, *, slug: str = "", question: str = "",
+                 tools=(), extensions=(),
                  session_dir: Path | None = None) -> pi_rpc.PiSession:
     """The only way this app builds a pi session.
 
@@ -281,14 +286,14 @@ def open_session(prompt_src: Path, *, slug: str = "", tools=(), extensions=(),
         tools=list(tools),
         system_prompt=prompt_src.read_text(),
         model=PI_MODEL,
-        env=pi_env(slug),
+        env=pi_env(slug, question),
     )
 
 
-def open_search_session(slug: str) -> pi_rpc.PiSession:
+def open_search_session(slug: str, question: str = "") -> pi_rpc.PiSession:
     """One pi process per run, holding the whole multi-round conversation."""
-    return open_session(AGENT_SRC, slug=slug, tools=SEARCH_TOOLS,
-                        extensions=TOOL_EXTENSIONS,
+    return open_session(AGENT_SRC, slug=slug, question=question,
+                        tools=SEARCH_TOOLS, extensions=TOOL_EXTENSIONS,
                         session_dir=PI_STATE_DIR / "sessions" / slug)
 
 
@@ -825,7 +830,7 @@ def install_banner(label: str):
 def search_loop(slug: str, question: str, pdf_info: list[dict], rounds: list[dict],
                 pdf_dir: str, run_id: str | None = None) -> tuple[Path | None, int]:
     """Returns (yaml_path, round_num) on success, (None, MAX_ROUNDS) when exhausted."""
-    session = open_search_session(slug)
+    session = open_search_session(slug, question)
     ledger = TokenLedger(run_id)
     try:
         return _search_rounds(session, slug, question, pdf_info, rounds, pdf_dir,
