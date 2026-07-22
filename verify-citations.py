@@ -472,6 +472,79 @@ def _check_enumeration_covers_digits(pattern: str, cache: dict,
     return {"found": False, "reason": " -- ".join(parts)}
 
 
+_GENERATIVE_CHARS = set("[.*+?{")
+_GENERATIVE_ESCAPES = set("dDwWsS")
+
+
+def _spelled_out_literals(pattern: str) -> list[str] | None:
+    """Return the literal alternatives a pattern spells out, or None if the
+    pattern can match anything it does not already contain.
+
+    A pattern with no character class, quantifier or wildcard — `a|b|c` — is
+    an alternation of literals, and matches exactly those literals and
+    nothing else. Used as an enumeration it is circular: it is offered as
+    proof that a, b and c are the only members of a family, but it could
+    never have found a fourth. The set comparison in rule 3 can't see this,
+    because the rerun uses the same pattern and agrees; nor can the digit
+    repair, which has no character class to widen.
+    """
+    depth_chars = []
+    i, n = 0, len(pattern)
+    while i < n:
+        ch = pattern[i]
+        if ch == "\\":
+            nxt = pattern[i + 1] if i + 1 < n else ""
+            if nxt in _GENERATIVE_ESCAPES:
+                return None
+            depth_chars.append(nxt)          # an escaped literal
+            i += 2
+            continue
+        if ch in _GENERATIVE_CHARS:
+            return None
+        depth_chars.append(ch)
+        i += 1
+
+    # Only literals, groups, anchors and | are left; split on the top-level |
+    branches, current, depth = [], [], 0
+    for ch in depth_chars:
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth = max(0, depth - 1)
+        elif ch == "|" and depth == 0:
+            branches.append("".join(current))
+            current = []
+            continue
+        else:
+            current.append(ch)
+            continue
+        current.append(ch)
+    branches.append("".join(current))
+    return [b for b in branches if b]
+
+
+def _check_enumeration_is_general(pattern: str, actual_matches: set[str]) -> dict | None:
+    """Fail an enumeration whose pattern can only match the literals it names.
+
+    Like the digit check, this fires on evidence: a pattern that spells
+    everything out but finds nothing has ruled out those literals and made no
+    exhaustiveness argument at all, so it is left alone. One that finds them
+    is being used to close a family it could never have opened.
+    """
+    if not actual_matches:
+        return None
+    literals = _spelled_out_literals(pattern)
+    if literals is None:
+        return None
+    return {"found": False,
+            "reason": f"pattern {pattern!r} has no character class, quantifier or wildcard -- "
+                      f"it can only match the {len(literals)} literal string(s) it spells out, "
+                      f"so finding them proves nothing about what else exists -- "
+                      f"an enumeration must be able to match names it does not already name; "
+                      f"widen the pattern to cover the family (a class and a quantifier around "
+                      f"the part that varies), or cite these as ordinary search_result queries"}
+
+
 def _check_search_result_regex(cit: dict) -> dict:
     """Verify a mode: regex search_result citation, which enumerates every
     DISTINCT string a regex pattern matches anywhere in the source (for
@@ -490,10 +563,11 @@ def _check_search_result_regex(cit: dict) -> dict:
        independent, unbounded rerun of the pattern actually finds across
        the whole document — catches both a fabricated symbol and one
        dropped to make an exhaustiveness claim look cleaner than it is.
-    4. The pattern itself must be able to match digits wherever it uses a
-       character class, if that makes any difference to what it finds —
-       see _check_enumeration_covers_digits, which catches the blind spot
-       rules 2 and 3 share.
+    4. The pattern must be able to match something it does not already spell
+       out (_check_enumeration_is_general), and must be able to match digits
+       wherever it uses a character class if that changes what it finds
+       (_check_enumeration_covers_digits). Both catch the blind spot rules 2
+       and 3 share: a crippled pattern rerun against itself always agrees.
     """
     pattern = cit.get("query")
     if not isinstance(pattern, str) or not pattern.strip():
@@ -547,8 +621,9 @@ def _check_search_result_regex(cit: dict) -> dict:
     actual_matches = {m["match"] for m in regen["matches"]}
 
     if claimed_matches == actual_matches:
-        return _check_enumeration_covers_digits(pattern, cache, actual_matches) \
-            or {"found": True}
+        return (_check_enumeration_is_general(pattern, actual_matches)
+                or _check_enumeration_covers_digits(pattern, cache, actual_matches)
+                or {"found": True})
 
     fabricated = sorted(claimed_matches - actual_matches)
     omitted = sorted(actual_matches - claimed_matches)
