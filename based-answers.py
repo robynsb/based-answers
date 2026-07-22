@@ -105,6 +105,32 @@ def emit_line(run_id: str | None, agent: str, line: str, extra: dict | None = No
     emit(run_id, "agent-line", data)
 
 
+class LineBuffer:
+    """Re-assembles streamed token deltas into whole lines.
+
+    The `agent-line` event is one line per event and the browser renders it
+    as such. pi streams text a token at a time, so emitting per delta puts
+    every word on its own line — the deltas have to be joined and re-split
+    on newlines before they become events.
+    """
+
+    def __init__(self, emit_one):
+        self._emit_one = emit_one
+        self._buf = ""
+
+    def feed(self, text: str):
+        self._buf += text
+        while "\n" in self._buf:
+            line, self._buf = self._buf.split("\n", 1)
+            self._emit_one(line)
+
+    def flush(self):
+        """Emit any trailing text not terminated by a newline."""
+        if self._buf:
+            self._emit_one(self._buf)
+            self._buf = ""
+
+
 def emit_answer(run_id: str | None, yaml_path: Path) -> str | None:
     """Render the answer YAML and push it to the browser. Returns the emitted
     HTML, or None if nothing was emitted (no server, or the file did not
@@ -207,20 +233,24 @@ def run_search_round(session: pi_rpc.PiSession, message: str, label: str,
                                         daemon=True, name="watch-answer")
         watch_thread.start()
 
+    buf = LineBuffer(lambda line: emit_line(run_id, "searcher", line))
+
     def on_event(ev):
         delta = pi_rpc.text_delta(ev)
         if delta:
             print(f"{SEARCH_COLOR}{delta}{RESET}", end="", flush=True)
-            emit_line(run_id, "searcher", delta)
+            buf.feed(delta)
             return
         if ev.get("type") == "tool_execution_start":
-            note = f"[tool] {ev.get('toolName')} {json.dumps(ev.get('args') or {})[:300]}\n"
-            print(f"{SEARCH_COLOR}{run_tag(run_id)}{note}{RESET}", end="", flush=True)
+            note = f"[tool] {ev.get('toolName')} {json.dumps(ev.get('args') or {})[:300]}"
+            print(f"{SEARCH_COLOR}{run_tag(run_id)}{note}\n{RESET}", end="", flush=True)
+            buf.flush()  # don't let a half-finished sentence merge into the note
             emit_line(run_id, "searcher", note)
 
     try:
         return session.prompt(message, on_event=on_event, timeout=timeout)
     finally:
+        buf.flush()
         stop_watch.set()
         if watch_thread is not None:
             watch_thread.join(timeout=10)
@@ -255,13 +285,16 @@ def run_checker(prompt_text: str, color: str = "", timeout: int = 120,
               f"── PROMPT GIVEN TO {CHECKER_NAME} ──\n{prompt_text}\n{'─' * 40}\n", extra)
 
     chunks = []
+    buf = LineBuffer(lambda line: emit_line(run_id, agent, line, extra))
 
     def on_event(ev):
         delta = pi_rpc.text_delta(ev)
         if delta:
             print(f"{color}{delta}{RESET if color else ''}", end="", flush=True)
-            emit_line(run_id, agent, delta, extra)
+            # chunks keeps the raw stream: the PASS/FAIL verdict is matched
+            # against the joined text, independent of line framing.
             chunks.append(delta)
+            buf.feed(delta)
 
     session = pi_rpc.PiSession(
         config_dir=PI_STATE_DIR / "pi",
@@ -279,9 +312,10 @@ def run_checker(prompt_text: str, color: str = "", timeout: int = 120,
     except pi_rpc.PiError as e:
         # A checker that cannot run must not silently read as a pass.
         msg = f"\n[checker error: {e}]\n"
-        emit_line(run_id, agent, msg, extra)
+        buf.feed(msg)
         chunks.append(msg)
     finally:
+        buf.flush()
         session.close()
     return "".join(chunks)
 
