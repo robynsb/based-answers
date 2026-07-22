@@ -20,4 +20,3 @@ permission:
   verify-citations: deny
   write-answer: deny
 ---
-All information needed to evaluate is in the prompt context. Do not use any tools. Read the prompt and respond directly.

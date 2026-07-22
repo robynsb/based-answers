@@ -454,8 +454,6 @@ def run_checker(prompt_text: str, ledger: "TokenLedger", color: str = "",
     all — the checker judges the text it is given and cannot go consult the
     sources itself.
     """
-    emit_line(run_id, agent,
-              f"── PROMPT GIVEN TO {CHECKER_NAME} ──\n{prompt_text}\n{'─' * 40}\n", extra)
 
     session = open_session(CHECKER_SRC)
     try:
