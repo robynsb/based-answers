@@ -687,10 +687,14 @@ function runElapsed() {
 // so this is rebuilt from the latest one rather than incremented — replay
 // after a reload lands in the same place.
 //
-// Deliberately no token counts. Summing `input` across a session counts the
-// transcript once per API call, so the figure runs to millions and means
-// nothing to a reader; cost and call count are the same information in units
-// that do.
+// The token figures are per round; only the elapsed time and cost on the
+// right cover the whole run. Note that summing `input` across a session
+// counts the transcript once per API call, so these run high — that is what
+// the provider bills, so the money is right even though the count is not a
+// measure of how much text was involved.
+//
+// `calls` is still what decides an agent has spent something, but it is not
+// shown: the round split already answers what it was there for.
 function renderTokens() {
   const bar = $("token-bar");
   if (!bar) return;
@@ -706,18 +710,18 @@ function renderTokens() {
   const per = names.length
     ? names.map(a => {
         const b = agents[a];
-        return `<span class="tk-agent">${a} <b>${money(b.cost)}</b>`
-             + ` <span class="tk-cost">${b.calls} call${b.calls === 1 ? "" : "s"}</span></span>`;
+        return `<span class="tk-agent">${a} <b>${(b.total || 0).toLocaleString()}</b>`
+             + ` <span class="tk-cost">${money(b.cost)}</span></span>`;
       }).join("")
-    : `<span class="tk-none">no model calls yet</span>`;
+    : `<span class="tk-none">no model usage yet</span>`;
 
   const live = n === currentRound && !terminal;
   bar.innerHTML =
       `<span class="tk-label">Round ${n}</span>`
     + `<span class="tk-time${live ? " live" : ""}">${duration(roundElapsed(n))}</span>`
     + per
-    + `<span class="tk-total">run ${duration(runElapsed())}`
-    + ` · <b>${money(tokens?.total?.cost)}</b></span>`;
+    + `<span class="tk-total">round total <b>${(usage?.total?.total || 0).toLocaleString()}</b>`
+    + ` · run ${duration(runElapsed())} · <b>${money(tokens?.total?.cost)}</b></span>`;
   bar.classList.add("on");
 }
 
