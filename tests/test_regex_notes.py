@@ -77,5 +77,72 @@ class TestRegexOutput(unittest.TestCase):
         self.assertLess(len(header), 120)
 
 
+class TestTruncationDiagnostic(unittest.TestCase):
+    r"""The trap that cost run -12 most of its rounds: a requirement at the end
+    of an otherwise-correct pattern. The reference section renders a space
+    before the paren and a code listing does not, so a trailing `\(` returns a
+    shorter list that still looks like an answer. The agent read the drop from
+    3 matches to 1 as the tool truncating its output."""
+
+    CACHE = {"chunks": [
+        {"page": 40, "text": "pio_sm_set_consecutive_pindirs(pio, sm, pin, 1, true);"},
+        {"page": 226, "text": "void pio_sm_set_pindirs_with_mask (PIO pio, uint sm, uint32_t values)"},
+    ]}
+
+    def notes(self, pattern):
+        matches = pdf_search.find_distinct_matches(self.CACHE, pattern).get("matches", [])
+        return pdf_search.regex_notes(pattern, matches, self.CACHE)
+
+    def test_trailing_requirement_that_excludes_matches_is_reported(self):
+        notes = self.notes(r"pio[a-z_]*pindir[a-z_]*\(")
+        self.assertEqual(len(notes), 1)
+        self.assertIn("2 match(es) instead of 1", notes[0])
+        # The actionable part: the space before the paren, shown verbatim
+        self.assertIn("' (PIO pio", notes[0])
+
+    def test_a_true_absence_gets_no_note(self):
+        # Dropping the structural tail still finds nothing, and the rest of
+        # the pattern is the search term, so there is nothing to report: the
+        # name really is not in the document. Saying otherwise would send the
+        # agent hunting for something that does not exist.
+        self.assertEqual(self.notes(r"pio_sm_get_pindir[a-z_]*\("), [])
+
+    def test_dropping_a_search_term_is_not_reported(self):
+        # `dir[a-z_]*` is part of what is being looked for, not a condition on
+        # it: `pio[a-z_]*pin` is a different search that naturally finds more.
+        self.assertEqual(self.notes("pio[a-z_]*pindir[a-z_]*"), [])
+
+    def test_structural_tails(self):
+        for tail in (r"\(", r"\s*\(", "[0-9]*", "$", r"\b"):
+            self.assertTrue(pdf_search._tail_is_structural(tail), tail)
+        for tail in ("dir[a-z_]*", "pindir", "get"):
+            self.assertFalse(pdf_search._tail_is_structural(tail), tail)
+
+    def test_no_cache_means_no_diagnostic(self):
+        # regex_notes stays callable without the document for the other checks
+        self.assertEqual(pdf_search.regex_notes(r"pio[a-z_]*pindir[a-z_]*\(", []), [])
+
+
+class TestRegexTokens(unittest.TestCase):
+    def test_classes_and_quantifiers_stay_together(self):
+        self.assertEqual(pdf_search.regex_tokens("pio[a-z_]*x"),
+                         ["p", "i", "o", "[a-z_]*", "x"])
+
+    def test_escapes_are_one_token(self):
+        self.assertEqual(pdf_search.regex_tokens(r"a\(b"), ["a", r"\(", "b"])
+
+    def test_groups_are_one_token(self):
+        self.assertEqual(pdf_search.regex_tokens("(ab|c)d"), ["(ab|c)", "d"])
+
+    def test_braced_repetition_stays_with_its_atom(self):
+        self.assertEqual(pdf_search.regex_tokens("a{2,3}b"), ["a{2,3}", "b"])
+
+    def test_every_prefix_of_the_tokens_compiles(self):
+        import re as _re
+        tokens = pdf_search.regex_tokens(r"pio_sm_[a-z_]*(get|set)[0-9]{1,2}\(")
+        for k in range(1, len(tokens) + 1):
+            _re.compile("".join(tokens[:k]))
+
+
 if __name__ == "__main__":
     unittest.main()

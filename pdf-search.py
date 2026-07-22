@@ -368,7 +368,135 @@ MATCH_LABEL_CHARS = 60
 SPAN_MATCH_CHARS = 80
 
 
-def regex_notes(pattern: str, matches: list[dict]) -> list[str]:
+def regex_tokens(pattern: str) -> list[str]:
+    """Split a pattern into units that can be dropped from the right without
+    leaving a syntactically broken regex: an escape, a character class, a
+    group, or a literal — each with any quantifier that follows it."""
+    tokens = []
+    i, n = 0, len(pattern)
+    while i < n:
+        start = i
+        ch = pattern[i]
+        if ch == "\\":
+            i += 2
+        elif ch == "[":
+            j = i + 1
+            if j < n and pattern[j] == "^":
+                j += 1
+            if j < n and pattern[j] == "]":
+                j += 1
+            while j < n and pattern[j] != "]":
+                j += 2 if pattern[j] == "\\" else 1
+            i = min(j + 1, n)
+        elif ch == "(":
+            depth, j = 1, i + 1
+            while j < n and depth:
+                if pattern[j] == "\\":
+                    j += 1
+                elif pattern[j] == "(":
+                    depth += 1
+                elif pattern[j] == ")":
+                    depth -= 1
+                j += 1
+            i = j
+        else:
+            i += 1
+        # Absorb a trailing quantifier so a token is never split from it
+        while i < n and pattern[i] in "*+?":
+            i += 1
+        if i < n and pattern[i] == "{":
+            close = pattern.find("}", i)
+            if close != -1:
+                i = close + 1
+        tokens.append(pattern[start:i])
+    return tokens
+
+
+def _tail_is_structural(tail: str) -> bool:
+    """True when dropping `tail` removes no search *term* — only escapes,
+    classes, quantifiers and anchors.
+
+    Dropping enough of any pattern finds more, so the diagnostic has to
+    distinguish a requirement from a subject. `\\(` at the end is a
+    requirement: remove it and you are asking the same question with one
+    fewer condition. `dir[a-z_]*` is part of what is being looked for:
+    remove it and `pio[a-z_]*pin` is a different search that naturally
+    matches more, and saying so would tell the agent its correct pattern
+    was broken.
+    """
+    literal = []
+    i, n = 0, len(tail)
+    while i < n:
+        ch = tail[i]
+        if ch == "\\":
+            i += 2
+        elif ch == "[":
+            j = i + 1
+            while j < n and tail[j] != "]":
+                j += 2 if tail[j] == "\\" else 1
+            i = j + 1
+        elif ch in "*+?{}()|^$.":
+            i += 1
+        else:
+            literal.append(ch)
+            i += 1
+    return not any(c.isalnum() for c in literal)
+
+
+def _truncation_diagnostic(data: dict, pattern: str, matches: list[dict],
+                           max_examples: int = 3) -> str | None:
+    """Find the longest proper prefix of `pattern` that matches strictly more
+    than `pattern` does, and show what follows it in the text.
+
+    A requirement at the end of a pattern is the easiest thing to get wrong
+    and the hardest to see: `pio[a-z_]*pindir[a-z_]*\\(` finds one function
+    where the same pattern without `\\(` finds three, because the reference
+    section renders a space before the paren and a code listing doesn't.
+    The result is not an error — it is a shorter list that looks like an
+    answer, which is the worst shape for an exhaustiveness claim. Reporting
+    the drop-off point turns it back into something the agent can act on.
+    """
+    tokens = regex_tokens(pattern)
+    if len(tokens) < 2:
+        return None
+    originals = {m["match"] for m in matches}
+    for k in range(len(tokens) - 1, 0, -1):
+        # Tails only grow as k falls, so the first non-structural one ends it.
+        if not _tail_is_structural("".join(tokens[k:])):
+            break
+        prefix = "".join(tokens[:k])
+        result = find_distinct_matches(data, prefix)
+        if result.get("error") or len(result["matches"]) <= len(matches):
+            continue
+        # Only strings the pattern didn't already find, and that aren't just
+        # fragments of one it did. Dropping enough of any pattern eventually
+        # matches more — `pio[a-z_]*` "finds" a bare "pio" inside every hit
+        # `pio[a-z_]*pindir` already had — and reporting that is noise.
+        # Case-insensitively, since matching itself is: "PIO" turning up inside
+        # a hit the pattern already had as "pio_sm_..." is the same fragment.
+        novel = [m for m in result["matches"]
+                 if not any(m["match"].lower() in o.lower() for o in originals)]
+        if not novel:
+            continue
+        dropped = "".join(tokens[k:])
+        examples = []
+        for m in novel[:max_examples]:
+            idx = m["snippet"].find(m["match"])
+            after = m["snippet"][idx + len(m["match"]):][:24] if idx != -1 else ""
+            examples.append(f'  {m["match"]!r} is followed in the text by {after!r}'
+                            if after else f'  {m["match"]!r}')
+        return (f"\nNote: dropping {dropped!r} from the end of this pattern gives "
+                f"{len(result['matches'])} match(es) instead of {len(matches)} — so {dropped!r} "
+                f"is what is excluding them, not their absence from the document. What the "
+                f"longer list actually contains:\n" + "\n".join(examples) +
+                f"\nIf those are the strings you were after, the end of your pattern is what "
+                f"filtered them out — check what actually follows them above. If they are not, "
+                f"then the shorter pattern's list is your evidence for what the document does "
+                f"contain.")
+    return None
+
+
+def regex_notes(pattern: str, matches: list[dict], data: dict | None = None) -> list[str]:
     """Warnings about a pattern that ran but did not do what it looks like.
 
     `search_regex` returns every *distinct matched string*, which is not what
@@ -403,6 +531,10 @@ def regex_notes(pattern: str, matches: list[dict]) -> list[str]:
             f"names — '.' matches spaces and punctuation, so '.*' runs from the first match on a "
             f"page to the last. Replace the '.*' with a class covering only the characters a name "
             f"can contain, e.g. '[a-z0-9_]*'.")
+    if data is not None:
+        truncation = _truncation_diagnostic(data, pattern, matches)
+        if truncation:
+            notes.append(truncation)
     return notes
 
 
@@ -418,7 +550,7 @@ def cmd_search_regex(data: dict, pattern: str, context_chars: int = 150, max_mat
     matches = result["matches"]
     if not matches:
         print("No matches found.")
-        for note in regex_notes(pattern, matches):
+        for note in regex_notes(pattern, matches, data):
             print(note)
         return
     print(f"{len(matches)} distinct match(es):\n")
@@ -429,7 +561,7 @@ def cmd_search_regex(data: dict, pattern: str, context_chars: int = 150, max_mat
         print(f"--- {label} (page {m['page']}) ---")
         print(m["snippet"])
         print()
-    for note in regex_notes(pattern, matches):
+    for note in regex_notes(pattern, matches, data):
         print(note)
 
 
