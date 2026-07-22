@@ -1,4 +1,4 @@
-**This software is 90% vibe-coded using Claude Code w/ Opus 4.8/Fable 5 and Opencode w/ Deepseek V4 Flash. I make no guarantees on the code quality.**
+**This software is 90% vibe-coded using Claude Code w/ Opus 4.8/Fable 5 and Opencode w/ Deepseek V4 Flash. This is a bare-bones prototype to demonstrate the idea. It is specifically configured for my setup. If there is an increased interest in this project, better configuration (and a total rewrite) could be started. For now, ask a coding agent to make edits where needed, it should work reasonably well. I make no guarantees on the code quality.**
 
 # Based Answers
 
@@ -40,7 +40,19 @@ Then sub-agents are spawned for each claim and have no idea about the top-level 
 If failed, the searcher agent receives feedback and we continue in a loop.
 
 ## A way to run this
-The software is not very complicated, you can _probably_ ask your favorite coding agent to run it for you.
+The software is not very complicated, ask your favorite coding agent to help you run it.
+
+### You need an LLM provider!
+The application is configured to use deepseek API. It is quite simple to change it to another provider, ask your coding agent.
+
+```
+export DEEPSEEK_API_KEY=(INSERT YOUR DEEPSEEK API TOKEN HERE)
+```
+
+If you're on macos you can use keychain:
+```
+security add-generic-password -a deepseek -s deepseek -w
+```
 
 ### With Nix
 ```
