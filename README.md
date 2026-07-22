@@ -4,6 +4,8 @@
 
 This is an agent harness for answering questions about PDFs which are treated as ground-truth with an emphasis on exact citations and human-in-the-loop verification.
 
+This is kind of a token-maxxing RAG.
+
 ## Demo
 
 https://github.com/user-attachments/assets/48c34111-0034-4531-8ed1-551b14fb9da4
@@ -36,3 +38,17 @@ answers:
 Then sub-agents are spawned for each claim and have no idea about the top-level question being asked and are tasked to decide whether the citations imply the claim.
 
 If failed, the searcher agent receives feedback and we continue in a loop.
+
+## A way to run this
+The software is not very complicated, you can _probably_ ask your favorite coding agent to run it for you.
+
+### With Nix
+```
+# Git clone repository 
+export PATH_TO_BASED_ANSWERS=(INSERT ABSOLUTE PATH TO REPO HERE)
+# Navigate to a directory with many PDFs you want to ask about.
+nix develop "path:$PATH_TO_BASED_ANSWERS" -c python3 $PATH_TO_BASED_ANSWERS/based-answers.py
+```
+
+### With Docker
+Coming soon...
