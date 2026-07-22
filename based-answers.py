@@ -56,12 +56,13 @@ SEARCH_TOOLS = ["pdf_search", "verify_citations", "write_answer"]
 
 # Everything pi would otherwise keep in ~/.pi lives here, under the CWD.
 PI_STATE_DIR = Path(".based-answers")
-PI_MODEL = os.environ.get("BA_PI_MODEL", "deepseek/deepseek-v4-flash")
+# "Free Models Router": OpenRouter picks among its zero-cost models.
+PI_MODEL = os.environ.get("BA_PI_MODEL", "openrouter/free")
 
 # Credentials: the env var wins, else the macOS Keychain generic password
 # stored under this service name (`security add-generic-password -s ... -w`).
-API_KEY_ENV = "DEEPSEEK_API_KEY"
-KEYCHAIN_SERVICE = os.environ.get("BA_KEYCHAIN_SERVICE", "deepseek")
+API_KEY_ENV = "OPENROUTER_API_KEY"
+KEYCHAIN_SERVICE = os.environ.get("BA_KEYCHAIN_SERVICE", "openrouter")
 
 MAX_ROUNDS = 5
 # How often the draft answer file is checked for a rewrite while the agent runs
@@ -220,7 +221,7 @@ def derive_slug(question: str) -> str:
 
 @functools.cache
 def api_key() -> str | None:
-    """The DeepSeek key, from the environment or the macOS Keychain.
+    """The OpenRouter key, from the environment or the macOS Keychain.
 
     pi's own auth.json is not reachable here: PI_CODING_AGENT_DIR is
     redirected under the CWD so a run cannot touch global pi state, which

@@ -17,7 +17,15 @@ nix develop "path:/Users/robin/.config/opencode/skills/citation-grounded-qa" -c 
 
 This indexes the CWD's `*.pdf`, starts Flask on an auto-assigned port (`--port` pins one, `--no-open` skips the browser), and serves until Ctrl-C. Questions are asked in the UI, never as CLI arguments.
 
-**Credentials**: the LLM is reached through pi, which needs `DEEPSEEK_API_KEY` in its process environment. `api_key()` takes it from the environment if set, else from the macOS Keychain generic password under service `deepseek` (`BA_KEYCHAIN_SERVICE` overrides). A global `pi /login` does **not** apply — `PI_CODING_AGENT_DIR` is redirected (see below), so pi never reads `~/.pi/agent/auth.json`. Startup prints which source was used, never the key. The model is `deepseek/deepseek-v4-flash` (`BA_PI_MODEL` overrides).
+**Credentials**: the LLM is reached through pi, which needs `OPENROUTER_API_KEY` in its process environment. `api_key()` takes it from the environment if set, else from the macOS Keychain generic password under service `openrouter` (`BA_KEYCHAIN_SERVICE` overrides). A global `pi /login` does **not** apply — `PI_CODING_AGENT_DIR` is redirected (see below), so pi never reads `~/.pi/agent/auth.json`. Startup prints which source was used, never the key. The model is `openrouter/free` — OpenRouter's "Free Models Router", a real id in pi's built-in model table, not a wildcard (`BA_PI_MODEL` overrides).
+
+Store the key in the Keychain once with:
+
+```sh
+security add-generic-password -U -s openrouter -a "$USER" -w
+```
+
+(`-w` with no value prompts for the key instead of putting it in shell history; `-U` updates an existing item.)
 
 Tests (stdlib unittest, in `tests/`; `tests/support.py` loads the dash-named scripts as modules; `tests/fixtures/` holds the RP2040 datasheet + real answer YAMLs driving the end-to-end tests):
 

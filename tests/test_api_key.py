@@ -87,7 +87,7 @@ class TestPiEnv(KeyCase):
         self.assertEqual(env["BA_SKILL_DIR"], str(self.based.SKILL_DIR))
 
     def test_absent_key_is_omitted_rather_than_set_empty(self):
-        """An empty DEEPSEEK_API_KEY would mask pi's own 'no key' error."""
+        """An empty OPENROUTER_API_KEY would mask pi's own 'no key' error."""
         self.stub_security(returncode=1)
         self.assertNotIn("TEST_KEY_ENV", self.based.pi_env("s"))
 
