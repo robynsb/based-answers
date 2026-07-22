@@ -421,6 +421,19 @@ def run_checker(prompt_text: str, ledger: "TokenLedger", color: str = "",
     return "".join(chunks)
 
 
+def claim_key(answer: dict) -> str:
+    """Identity of one claim for latching: its text plus its citations.
+
+    Everything the semantic checker is shown about a claim comes from these
+    two fields, so two answers with the same key pose the checker exactly the
+    same question. Serialized with sorted keys so a YAML rewrite that only
+    reorders mapping keys doesn't read as a change; `default=str` keeps an
+    odd scalar (a YAML date, say) from raising here.
+    """
+    return json.dumps([answer.get("claim", ""), answer.get("citations", [])],
+                      sort_keys=True, default=str)
+
+
 def run_semantic_checkers(yaml_path: Path, ledger: "TokenLedger",
                           run_id: str | None = None,
                           passed_claims: set[str] | None = None) -> list[dict]:
@@ -428,13 +441,18 @@ def run_semantic_checkers(yaml_path: Path, ledger: "TokenLedger",
     goes straight back to the search agent (later claims stay unchecked —
     they may shift anyway once the failing one is fixed).
 
-    `passed_claims` latches verbatim claim texts that already passed in an
-    earlier round of this run, keyed on the claim text alone. The checker is
-    an LLM and is not deterministic at the margin: an unchanged claim that
-    passed in round 3 can fail in round 5 and end an otherwise-succeeding run
-    purely on a re-roll. Re-judging it buys nothing — the searcher was told
-    nothing about it, so a second verdict is a new sample, not new evidence.
-    Passing the set in from the loop is what makes it survive across rounds."""
+    `passed_claims` latches claims that already passed in an earlier round of
+    this run. The checker is an LLM and is not deterministic at the margin: a
+    claim that passed in round 3 can fail in round 5 and end an
+    otherwise-succeeding run purely on a re-roll. Re-judging an unchanged
+    claim buys nothing — a second verdict on identical input is a new sample,
+    not new evidence. Passing the set in from the loop is what makes it
+    survive across rounds.
+
+    The latch key is `claim_key()`: the claim text *and* its citations. The
+    citations are the evidence the verdict was actually about, so a claim
+    whose quotes, queries or enumerations changed is a different question and
+    goes back through the checker even when its wording is identical."""
     try:
         import yaml as pyyaml
         with open(yaml_path) as f:
@@ -451,11 +469,12 @@ def run_semantic_checkers(yaml_path: Path, ledger: "TokenLedger",
         claim = a.get("claim", "")
         if not claim:
             continue
-        if passed_claims is not None and claim in passed_claims:
+        key = claim_key(a)
+        if passed_claims is not None and key in passed_claims:
             print(f"  {run_tag(run_id)}[PASS] Claim {i+1} (latched from an earlier round): {claim[:80]}")
             emit_line(run_id, "semantic",
-                      "── SKIPPED ──\nThis claim's text is unchanged since a round in "
-                      "which it passed, so its earlier PASS is carried forward.\n"
+                      "── SKIPPED ──\nThis claim and its citations are unchanged since a "
+                      "round in which it passed, so its earlier PASS is carried forward.\n"
                       f"{'─' * 40}\n", {"claim": i})
             emit(run_id, "claim-status", {"index": i, "claim": claim, "status": "pass"})
             continue
@@ -552,7 +571,7 @@ Rules: direct logical inference OK. Cross-source inference OK. PREVIOUS_CLAIMS m
             failures.append({"claim": claim, "output": result[:2000]})
             return failures
         if passed_claims is not None:
-            passed_claims.add(claim)
+            passed_claims.add(key)
 
     return failures
 

@@ -1,6 +1,8 @@
-"""A claim whose text is unchanged since a round in which it passed is not
+"""A claim that is unchanged since a round in which it passed is not
 re-judged: the semantic checker is not deterministic at the margin, so a
-second verdict on identical text is a re-roll, not new evidence."""
+second verdict on identical input is a re-roll, not new evidence. "Unchanged"
+means the claim text *and* its citations — the citations are the evidence the
+verdict was about, so changing them poses a new question."""
 
 import tempfile
 import unittest
@@ -23,6 +25,24 @@ answers:
   - claim: "claim one"
     citations: [{text: "t1", page: 1, source: "s.pdf"}]
   - claim: "claim two, but stated more carefully"
+    citations: [{text: "t2", page: 1, source: "s.pdf"}]
+"""
+
+# Same two claim texts, but claim one now rests on a different quote.
+RECITED_FIRST = """question: "q?"
+answers:
+  - claim: "claim one"
+    citations: [{text: "a different quote entirely", page: 7, source: "s.pdf"}]
+  - claim: "claim two"
+    citations: [{text: "t2", page: 1, source: "s.pdf"}]
+"""
+
+# Same claim, same citation, mapping keys written in a different order.
+REORDERED_KEYS = """question: "q?"
+answers:
+  - claim: "claim one"
+    citations: [{source: "s.pdf", page: 1, text: "t1"}]
+  - claim: "claim two"
     citations: [{text: "t2", page: 1, source: "s.pdf"}]
 """
 
@@ -56,21 +76,36 @@ class TestClaimLatching(unittest.TestCase):
         checked, failures = self.run_round(TWO_CLAIMS, {0: "PASS", 1: "FAIL: nope"}, latched)
         self.assertEqual(checked, [0, 1])
         self.assertEqual(len(failures), 1)
-        self.assertEqual(latched, {"claim one"})
+        self.assertEqual(len(latched), 1)
 
-        # Next round: the searcher re-offers claim one verbatim. Even with the
+        # Next round: the searcher re-offers claim one untouched. Even with the
         # checker now primed to fail it, it is never asked — this is the exact
         # shape of the run that lost a passing claim to a re-roll in round 5.
         checked, failures = self.run_round(TWO_CLAIMS, {0: "FAIL: re-roll", 1: "PASS"}, latched)
         self.assertEqual(checked, [1])
         self.assertEqual(failures, [])
-        self.assertEqual(latched, {"claim one", "claim two"})
+        self.assertEqual(len(latched), 2)
 
     def test_reworded_claim_is_rechecked(self):
         latched = set()
         self.run_round(TWO_CLAIMS, {0: "PASS", 1: "FAIL: nope"}, latched)
         checked, _ = self.run_round(REWORDED_SECOND, {0: "PASS", 1: "PASS"}, latched)
         self.assertEqual(checked, [1])  # claim one latched, reworded claim two judged
+
+    def test_recited_claim_is_rechecked(self):
+        # Identical wording, different evidence: the verdict was about the
+        # evidence, so it does not carry over.
+        latched = set()
+        self.run_round(TWO_CLAIMS, {0: "PASS", 1: "FAIL: nope"}, latched)
+        checked, _ = self.run_round(RECITED_FIRST, {0: "PASS", 1: "PASS"}, latched)
+        self.assertEqual(checked, [0, 1])
+
+    def test_reordered_yaml_keys_still_latch(self):
+        # A rewrite that only shuffles mapping keys is not a change.
+        latched = set()
+        self.run_round(TWO_CLAIMS, {0: "PASS", 1: "FAIL: nope"}, latched)
+        checked, _ = self.run_round(REORDERED_KEYS, {0: "FAIL: re-roll", 1: "PASS"}, latched)
+        self.assertEqual(checked, [1])
 
     def test_no_latch_set_preserves_old_behaviour(self):
         checked, failures = self.run_round(TWO_CLAIMS, {0: "PASS", 1: "PASS"}, None)
