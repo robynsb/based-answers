@@ -127,8 +127,6 @@ For family-of-names claims, call `pdf_search` with `action: "search_regex"` + a 
         # ... every distinct match search_regex returned, none omitted
 ```
 
-The `pattern` must be able to match names it does not already spell out. An alternation of the exact names you expect — `Alderman Hodges|Alderman Pierce` — is circular: it is offered as proof that those are the only two, but it could never have found a third. The verifier rejects such a pattern outright. Put a character class and a quantifier around the part that varies, as above.
-
 The checker also judges whether your `pattern` covers the right family — if there's another obviously relevant variant the claim implies, enumerate that too as a separate `search_result` citation.
 
 ### Rule 3: Direct Logical Inference Only
