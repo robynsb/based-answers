@@ -173,6 +173,8 @@
     margin-top: 0.4rem;
   }
   .stream:empty::before { content: "(no output yet)"; color: #666; font-style: italic; }
+  /* reasoning tokens: visible, but never mistakable for the agent's reply */
+  .stream .think { color: #8a8aa8; font-style: italic; }
   #searcher-details { margin-top: 1rem; }
   .checks .stream-details { margin-left: 1.8em; }
 
@@ -337,7 +339,9 @@ let lastId = 0;
 function roundData(n) {
   if (!rounds.has(n)) {
     rounds.set(n, {
-      searcher: "",
+      // Streams are lists of {line, kind}, not text: a line's kind decides
+      // how it renders (reasoning tokens are dimmed apart from the reply).
+      searcher: [],
       answerHtml: null,
       claims: new Map(),  // index -> {claim, status, stream}
       det: null,          // {status, output}
@@ -347,18 +351,32 @@ function roundData(n) {
   return rounds.get(n);
 }
 
+function newCoh() { return { status: "checking", stream: [], output: "" }; }
+
 function claimData(r, index, claim) {
-  if (!r.claims.has(index)) r.claims.set(index, { claim: claim || "", status: "checking", stream: "" });
+  if (!r.claims.has(index)) r.claims.set(index, { claim: claim || "", status: "checking", stream: [] });
   const c = r.claims.get(index);
   if (claim) c.claim = claim;
   return c;
 }
 
 // ── DOM builders ──
-function appendStream(pre, text) {
+function streamNode({ line, kind }) {
+  const node = document.createElement("span");
+  node.className = kind === "thinking" ? "line think" : "line";
+  node.textContent = line + "\n";
+  return node;
+}
+
+function appendStream(pre, entry) {
   const pinned = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 8;
-  pre.textContent += text + "\n";
+  pre.appendChild(streamNode(entry));
   if (pinned) pre.scrollTop = pre.scrollHeight;
+}
+
+function fillStream(pre, entries) {
+  pre.textContent = "";
+  for (const e of entries) pre.appendChild(streamNode(e));
 }
 
 function iconClass(status) {
@@ -388,7 +406,7 @@ function makeStreamDetails(id, summary, content) {
   det.id = id;
   det.innerHTML = "<summary></summary><pre class='stream'></pre>";
   det.querySelector("summary").textContent = summary;
-  det.querySelector("pre").textContent = content;
+  fillStream(det.querySelector("pre"), content);
   return det;
 }
 
@@ -422,7 +440,7 @@ function rebuild() {
   if (!r) {
     answer.innerHTML = '<div class="placeholder"><span class="spinner"></span> Waiting for the pipeline…</div>';
     $("check-rows").innerHTML = "";
-    $("stream-searcher").textContent = "";
+    fillStream($("stream-searcher"), []);
     updateNav();
     return;
   }
@@ -436,7 +454,7 @@ function rebuild() {
     answer.innerHTML = '<div class="placeholder">No answer was produced this round.</div>';
   }
 
-  $("stream-searcher").textContent = r.searcher;
+  fillStream($("stream-searcher"), r.searcher);
 
   const rows = $("check-rows");
   rows.innerHTML = "";
@@ -515,7 +533,7 @@ function handle(msg) {
         }
       } else if (phase === "coherence") {
         const cr = roundData(currentRound);
-        if (!cr.coh) cr.coh = { status: "checking", stream: "", output: "" };
+        if (!cr.coh) cr.coh = newCoh();
         if (viewing === currentRound && !$("check-coh")) {
           addCoherenceRow(checksContainer(), cr.coh);
         }
@@ -525,23 +543,24 @@ function handle(msg) {
 
   } else if (msg.event === "agent-line") {
     const cr = roundData(currentRound || 1);
+    const entry = { line: d.line, kind: d.kind || "text" };
     if (d.agent === "searcher") {
-      cr.searcher += d.line + "\n";
-      if (viewing === currentRound) appendStream($("stream-searcher"), d.line);
+      cr.searcher.push(entry);
+      if (viewing === currentRound) appendStream($("stream-searcher"), entry);
     } else if (d.agent === "semantic") {
       const c = claimData(cr, d.claim ?? 0);
-      c.stream += d.line + "\n";
+      c.stream.push(entry);
       if (viewing === currentRound) {
         const det = $(claimStreamId(d.claim ?? 0));
-        if (det) appendStream(det.querySelector("pre"), d.line);
+        if (det) appendStream(det.querySelector("pre"), entry);
         else rebuild();
       }
     } else if (d.agent === "coherence") {
-      if (!cr.coh) cr.coh = { status: "checking", stream: "", output: "" };
-      cr.coh.stream += d.line + "\n";
+      if (!cr.coh) cr.coh = newCoh();
+      cr.coh.stream.push(entry);
       if (viewing === currentRound) {
         const det = $("coh-stream");
-        if (det) appendStream(det.querySelector("pre"), d.line);
+        if (det) appendStream(det.querySelector("pre"), entry);
         else rebuild();
       }
     }
@@ -566,7 +585,7 @@ function handle(msg) {
         else rebuild(); // failure adds the verifier-output block
       }
     } else {
-      if (!cr.coh) cr.coh = { status: "checking", stream: "", output: "" };
+      if (!cr.coh) cr.coh = newCoh();
       cr.coh.status = d.passed ? "pass" : "fail";
       cr.coh.output = d.output || "";
       if (viewing === currentRound) {

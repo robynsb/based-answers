@@ -71,6 +71,7 @@ ANSWER_POLL_SECONDS = 0.7
 SEARCH_COLOR = "\033[36m"     # cyan: citation-searcher
 SEMANTIC_COLOR = "\033[35m"   # magenta: semantic checks
 COHERENCE_COLOR = "\033[34m"  # blue: coherence check
+DIM = "\033[2m"               # dim: any agent's reasoning tokens
 RESET = "\033[0m"
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
@@ -297,19 +298,35 @@ def stream_prompt(session: pi_rpc.PiSession, message: str, *, agent: str,
     Every agent streams the same way — token deltas to stdout in the agent's
     colour, re-assembled into whole `agent-line` events, with usage recorded
     against that agent — so it is written once here rather than per caller.
-    Returns the assistant text, which the checkers match PASS/FAIL against.
+
+    Reasoning tokens stream alongside as `kind: thinking` lines, so the
+    browser can show what an agent was working through and dim it apart from
+    the reply. They are deliberately kept out of the returned text: the
+    checkers match PASS/FAIL against that, and a checker weighing a failure
+    aloud before answering PASS must not read as a failure.
     """
     chunks = []
+    think_extra = {**(extra or {}), "kind": "thinking"}
     buf = LineBuffer(lambda line: emit_line(run_id, agent, line, extra))
+    think = LineBuffer(lambda line: emit_line(run_id, agent, line, think_extra))
     record_usage = ledger.observer(agent)
 
     def on_event(ev):
         record_usage(ev)
         delta = pi_rpc.text_delta(ev)
         if delta:
+            # Flush the other buffer first: its trailing partial line belongs
+            # before this one, not merged into whatever arrives next.
+            think.flush()
             print(f"{color}{delta}{RESET if color else ''}", end="", flush=True)
             chunks.append(delta)
             buf.feed(delta)
+            return
+        thought = pi_rpc.thinking_delta(ev)
+        if thought:
+            buf.flush()
+            print(f"{DIM}{thought}{RESET}", end="", flush=True)
+            think.feed(thought)
             return
         if on_extra_event is not None:
             on_extra_event(ev, buf)
@@ -317,6 +334,7 @@ def stream_prompt(session: pi_rpc.PiSession, message: str, *, agent: str,
     try:
         session.prompt(message, on_event=on_event, timeout=timeout)
     finally:
+        think.flush()
         buf.flush()
     return "".join(chunks)
 

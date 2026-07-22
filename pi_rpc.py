@@ -282,14 +282,30 @@ class PiSession:
         return False
 
 
-def text_delta(event: dict) -> str | None:
-    """The streamed assistant text in a message_update event, if any."""
+def _delta(event: dict, kind: str) -> str | None:
     if event.get("type") != "message_update":
         return None
     ame = event.get("assistantMessageEvent") or {}
-    if ame.get("type") == "text_delta":
+    if ame.get("type") == kind:
         return ame.get("delta") or ""
     return None
+
+
+def text_delta(event: dict) -> str | None:
+    """The streamed assistant text in a message_update event, if any."""
+    return _delta(event, "text_delta")
+
+
+def thinking_delta(event: dict) -> str | None:
+    """The streamed reasoning text in a message_update event, if any.
+
+    A reasoning model emits its thinking as its own content block, separate
+    from the answer: `thinking_start`, a run of `thinking_delta`s, then
+    `thinking_end`, before any `text_delta`. It is shown to the user but must
+    never be mistaken for the assistant's reply — a checker that reasons "this
+    could FAIL if…" and then answers PASS would be read as a failure.
+    """
+    return _delta(event, "thinking_delta")
 
 
 USAGE_FIELDS = ("input", "output", "cacheRead", "cacheWrite")
