@@ -820,6 +820,20 @@ def search_loop(slug: str, question: str, pdf_info: list[dict], rounds: list[dic
               f"(${t['cost']:.4f})", flush=True)
 
 
+def searcher_produced_nothing(ledger: "TokenLedger") -> bool:
+    """True when the search agent completed calls but returned zero tokens.
+
+    A provider that rejects the model (404) or throttles it (429) makes pi
+    emit no assistant message at all, so the round looks like an agent that
+    simply wrote no YAML — and the loop dutifully retries it MAX_ROUNDS
+    times before reporting `exhausted`, i.e. "tried and could not answer".
+    Zero tokens across completed calls means the model never ran, which is
+    a configuration fault and not something another round can fix.
+    """
+    bucket = ledger.snapshot()["by_agent"].get("searcher")
+    return bool(bucket) and bucket["calls"] > 0 and bucket["total"] == 0
+
+
 def _search_rounds(session, slug: str, question: str, pdf_info: list[dict],
                    rounds: list[dict], pdf_dir: str,
                    run_id: str | None, ledger: "TokenLedger") -> tuple[Path | None, int]:
@@ -855,6 +869,16 @@ def _search_rounds(session, slug: str, question: str, pdf_info: list[dict],
             rounds.append({"round": round_num, "feedback": feedback})
             emit(run_id, "feedback", {"round": round_num, "text": feedback})
             raise
+
+        # Fail fast rather than burn the remaining rounds on a model that is
+        # never going to answer. Only round 1 is checked: the ledger is
+        # cumulative, so a later round reading zero implies round 1 did too.
+        if round_num == 1 and searcher_produced_nothing(ledger):
+            calls = ledger.snapshot()["by_agent"]["searcher"]["calls"]
+            raise pi_rpc.PiError(
+                f"the search agent returned zero tokens across {calls} call(s) — "
+                f"the model produced no output at all. Check the model slug "
+                f"(BA_PI_MODEL, currently {PI_MODEL!r}) and the API key.")
 
         yaml_path = find_yaml(slug)
         if not yaml_path:
