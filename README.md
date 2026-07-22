@@ -1,4 +1,4 @@
-**This software is 90% vibe-coded using Claude Code w/ Opus 4.8/Fable 5 and Opencode w/ Deepseek V4 Flash. I make no guarantees on its quality.**
+**This software is 90% vibe-coded using Claude Code w/ Opus 4.8/Fable 5 and Opencode w/ Deepseek V4 Flash. I make no guarantees on the code quality.**
 
 # Based Answers
 
