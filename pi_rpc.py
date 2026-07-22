@@ -270,6 +270,33 @@ def text_delta(event: dict) -> str | None:
     return None
 
 
+USAGE_FIELDS = ("input", "output", "cacheRead", "cacheWrite")
+
+
+def message_usage(event: dict) -> dict | None:
+    """Token usage reported by a completed assistant message, if any.
+
+    `message_end` carries the finished AssistantMessage, whose `usage` block
+    is what the provider billed for that one API call. Summing these across
+    a session is the real cost: a continuing conversation re-sends its whole
+    context, so each call's `input` counts the transcript again — that is
+    double counting of tokens, but not of money.
+    """
+    if event.get("type") != "message_end":
+        return None
+    msg = event.get("message") or {}
+    if msg.get("role") != "assistant":
+        return None
+    usage = msg.get("usage")
+    if not isinstance(usage, dict):
+        return None
+    out = {k: int(usage.get(k) or 0) for k in USAGE_FIELDS}
+    cost = usage.get("cost")
+    out["cost"] = float((cost or {}).get("total") or 0.0) if isinstance(cost, dict) else 0.0
+    out["total"] = sum(out[k] for k in USAGE_FIELDS)
+    return out
+
+
 def tool_finished(event: dict, name: str) -> dict | None:
     """The result of a completed call to `name`, if this event is one."""
     if event.get("type") != "tool_execution_end":

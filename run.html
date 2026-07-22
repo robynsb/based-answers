@@ -66,6 +66,26 @@
     font-size: 0.95rem;
   }
   .status-bar .round { font-weight: 700; color: var(--accent); white-space: nowrap; }
+  /* Cumulative for the whole question, so it sits outside the round navigation */
+  .token-bar {
+    display: none;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.35rem 1.1rem;
+    margin: -1rem 0 1.5rem;
+    padding: 0.5rem 1rem;
+    border: 1px solid var(--card-border);
+    border-radius: 8px;
+    font-size: 0.85rem;
+    color: var(--muted);
+  }
+  .token-bar.on { display: flex; }
+  .token-bar .tk-label { font-weight: 600; color: var(--text); }
+  .token-bar .tk-agent { white-space: nowrap; }
+  .token-bar .tk-agent b { font-weight: 600; color: var(--text); }
+  .token-bar .tk-cost { color: var(--muted); }
+  .token-bar .tk-total { margin-left: auto; white-space: nowrap; color: var(--text); }
+  .token-bar .tk-total b { color: var(--accent); }
   .status-bar.passed { border-color: var(--ok); }
   .status-bar.passed .phase { color: var(--ok); font-weight: 600; }
   .status-bar.exhausted { border-color: var(--warn); }
@@ -272,6 +292,8 @@
   <span class="round" id="round-label">Round –/{{ max_rounds }}</span>
   <span class="phase" id="phase-label">connecting…</span>
 </div>
+
+<div class="token-bar" id="token-bar"></div>
 
 <section>
   <div id="answer"></div>
@@ -567,9 +589,40 @@ function handle(msg) {
       $("answer").innerHTML = d.html;
       window.renderAllPreviews?.();
     }
+  } else if (msg.event === "tokens") {
+    renderTokens(d);
   }
   // "feedback" events are intentionally not displayed: the feedback text
   // appears in the next round's searcher stream instead
+}
+
+const AGENT_LABEL = { searcher: "searcher", semantic: "semantic", coherence: "coherence" };
+
+function money(n) {
+  // Runs are cheap enough that 2dp rounds most of them to $0.00. A cheap
+  // agent still must not render as $0.0000, which reads as broken rather
+  // than as "too small to show".
+  n = n || 0;
+  if (n === 0) return "$0";
+  if (n < 0.0001) return "<$0.0001";
+  return "$" + n.toFixed(4);
+}
+
+// Each `tokens` event carries the full running total, so the bar is rebuilt
+// rather than incremented — replay after a reload lands on the same state.
+function renderTokens(d) {
+  const bar = $("token-bar");
+  if (!bar || !d || !d.total) return;
+  const per = Object.keys(AGENT_LABEL)
+    .filter(a => d.by_agent?.[a]?.calls)
+    .map(a => {
+      const b = d.by_agent[a];
+      return `<span class="tk-agent">${AGENT_LABEL[a]} <b>${b.total.toLocaleString()}</b>`
+           + ` <span class="tk-cost">${money(b.cost)} · ${b.calls} call${b.calls === 1 ? "" : "s"}</span></span>`;
+    }).join("");
+  bar.innerHTML = `<span class="tk-label">Tokens</span>${per}`
+    + `<span class="tk-total">total <b>${d.total.total.toLocaleString()}</b> · ${money(d.total.cost)}</span>`;
+  bar.classList.add("on");
 }
 
 function connect() {

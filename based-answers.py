@@ -105,6 +105,62 @@ def emit_line(run_id: str | None, agent: str, line: str, extra: dict | None = No
     emit(run_id, "agent-line", data)
 
 
+class TokenLedger:
+    """Cumulative token and cost totals for one run, split by agent.
+
+    Every assistant message from every pi session in the run lands here, so
+    the figures cover the whole question: the searcher's session across all
+    rounds, plus a fresh session for each semantic and coherence check.
+    Emits the full running total each time, so a browser that reconnects or
+    replays only needs the latest `tokens` event.
+    """
+
+    AGENTS = ("searcher", "semantic", "coherence")
+
+    def __init__(self, run_id: str | None, emit_fn=None):
+        self.run_id = run_id
+        self._emit = emit_fn if emit_fn is not None else emit
+        self._lock = threading.Lock()
+        self.by_agent = {a: self._zero() for a in self.AGENTS}
+
+    @staticmethod
+    def _zero() -> dict:
+        d = {k: 0 for k in pi_rpc.USAGE_FIELDS}
+        d["total"] = 0
+        d["cost"] = 0.0
+        d["calls"] = 0
+        return d
+
+    def add(self, agent: str, usage: dict):
+        if agent not in self.by_agent:
+            return
+        with self._lock:
+            bucket = self.by_agent[agent]
+            for k in pi_rpc.USAGE_FIELDS:
+                bucket[k] += usage.get(k, 0)
+            bucket["total"] += usage.get("total", 0)
+            bucket["cost"] += usage.get("cost", 0.0)
+            bucket["calls"] += 1
+            payload = self.snapshot()
+        self._emit(self.run_id, "tokens", payload)
+
+    def snapshot(self) -> dict:
+        run_total = self._zero()
+        for bucket in self.by_agent.values():
+            for k in list(pi_rpc.USAGE_FIELDS) + ["total", "cost", "calls"]:
+                run_total[k] += bucket[k]
+        return {"by_agent": {a: dict(b) for a, b in self.by_agent.items()},
+                "total": run_total}
+
+    def observer(self, agent: str):
+        """An on_event hook that records usage for `agent`."""
+        def observe(ev):
+            usage = pi_rpc.message_usage(ev)
+            if usage:
+                self.add(agent, usage)
+        return observe
+
+
 class LineBuffer:
     """Re-assembles streamed token deltas into whole lines.
 
@@ -215,7 +271,7 @@ def open_search_session(slug: str) -> pi_rpc.PiSession:
 
 def run_search_round(session: pi_rpc.PiSession, message: str, label: str,
                      run_id: str | None = None, watcher=None,
-                     timeout: int = 900) -> dict:
+                     timeout: int = 900, ledger: "TokenLedger | None" = None) -> dict:
     """Send one round's message and block until the agent has fully settled."""
     print(f"\n{'─' * 60}", flush=True)
     print(f"{run_tag(run_id)}{label} GIVEN TO {AGENT_NAME}:", flush=True)
@@ -234,8 +290,11 @@ def run_search_round(session: pi_rpc.PiSession, message: str, label: str,
         watch_thread.start()
 
     buf = LineBuffer(lambda line: emit_line(run_id, "searcher", line))
+    record_usage = ledger.observer("searcher") if ledger is not None else None
 
     def on_event(ev):
+        if record_usage is not None:
+            record_usage(ev)
         delta = pi_rpc.text_delta(ev)
         if delta:
             print(f"{SEARCH_COLOR}{delta}{RESET}", end="", flush=True)
@@ -274,7 +333,8 @@ def run_deterministic(yaml_path: Path, pdf_dir: str = ".") -> dict:
 
 def run_checker(prompt_text: str, color: str = "", timeout: int = 120,
                 agent: str = "coherence", run_id: str | None = None,
-                extra: dict | None = None) -> str:
+                extra: dict | None = None,
+                ledger: "TokenLedger | None" = None) -> str:
     """Judge one rubric with a fresh, tool-less pi session.
 
     Each check is independent, so it gets its own session with no tools at
@@ -286,8 +346,11 @@ def run_checker(prompt_text: str, color: str = "", timeout: int = 120,
 
     chunks = []
     buf = LineBuffer(lambda line: emit_line(run_id, agent, line, extra))
+    record_usage = ledger.observer(agent) if ledger is not None else None
 
     def on_event(ev):
+        if record_usage is not None:
+            record_usage(ev)
         delta = pi_rpc.text_delta(ev)
         if delta:
             print(f"{color}{delta}{RESET if color else ''}", end="", flush=True)
@@ -320,7 +383,8 @@ def run_checker(prompt_text: str, color: str = "", timeout: int = 120,
     return "".join(chunks)
 
 
-def run_semantic_checkers(yaml_path: Path, run_id: str | None = None) -> list[dict]:
+def run_semantic_checkers(yaml_path: Path, run_id: str | None = None,
+                          ledger: "TokenLedger | None" = None) -> list[dict]:
     """Check claims in order; stops at the first failing claim so the round
     goes straight back to the search agent (later claims stay unchecked —
     they may shift anyway once the failing one is fixed)."""
@@ -423,6 +487,7 @@ Does the SYNTHESIS of all {synthesis_sources} together with PREVIOUS_CLAIMS stri
 Rules: direct logical inference OK. Cross-source inference OK. PREVIOUS_CLAIMS may be treated as established facts and combined with SOURCE_TEXTS. External domain knowledge = FAIL. Never use your own knowledge.
 """
         result = run_checker(rubric, color=SEMANTIC_COLOR, agent="semantic", run_id=run_id,
+                             ledger=ledger,
                              extra={"claim": i})
         passed = "PASS" in result.upper() and "FAIL" not in result.upper()
         print(f"  {run_tag(run_id)}{'[PASS]' if passed else '[FAIL]'} Claim {i+1}: {claim[:80]}")
@@ -435,7 +500,8 @@ Rules: direct logical inference OK. Cross-source inference OK. PREVIOUS_CLAIMS m
     return failures
 
 
-def run_coherence_checker(yaml_path: Path, question: str, run_id: str | None = None) -> dict:
+def run_coherence_checker(yaml_path: Path, question: str, run_id: str | None = None,
+                          ledger: "TokenLedger | None" = None) -> dict:
     try:
         import yaml as pyyaml
         with open(yaml_path) as f:
@@ -463,7 +529,8 @@ Respond with:
 - PASS
 - FAIL: <what is missing, unclear, or doesn't make sense>
 """
-    result = run_checker(rubric, color=COHERENCE_COLOR, agent="coherence", run_id=run_id)
+    result = run_checker(rubric, color=COHERENCE_COLOR, agent="coherence", run_id=run_id,
+                         ledger=ledger)
     passed = "PASS" in result.upper() and "FAIL" not in result.upper()
     print(f"  {run_tag(run_id)}{'[PASS]' if passed else '[FAIL]'} Coherence check")
     return {"passed": passed, "output": result[:2000]}
@@ -673,15 +740,20 @@ def search_loop(slug: str, question: str, pdf_info: list[dict], rounds: list[dic
                 pdf_dir: str, run_id: str | None = None) -> tuple[Path | None, int]:
     """Returns (yaml_path, round_num) on success, (None, MAX_ROUNDS) when exhausted."""
     session = open_search_session(slug)
+    ledger = TokenLedger(run_id)
     try:
-        return _search_rounds(session, slug, question, pdf_info, rounds, pdf_dir, run_id)
+        return _search_rounds(session, slug, question, pdf_info, rounds, pdf_dir,
+                              run_id, ledger)
     finally:
         session.close()
+        t = ledger.snapshot()["total"]
+        print(f"  {run_tag(run_id)}Tokens: {t['total']:,} across {t['calls']} calls "
+              f"(${t['cost']:.4f})", flush=True)
 
 
 def _search_rounds(session, slug: str, question: str, pdf_info: list[dict],
                    rounds: list[dict], pdf_dir: str,
-                   run_id: str | None) -> tuple[Path | None, int]:
+                   run_id: str | None, ledger: "TokenLedger") -> tuple[Path | None, int]:
     for round_num in range(1, MAX_ROUNDS + 1):
         label = f"ROUND {round_num}/{MAX_ROUNDS}"
         if rounds:
@@ -702,7 +774,8 @@ def _search_rounds(session, slug: str, question: str, pdf_info: list[dict],
             what = "FEEDBACK"
 
         try:
-            run_search_round(session, message, what, run_id=run_id, watcher=watcher)
+            run_search_round(session, message, what, run_id=run_id, watcher=watcher,
+                             ledger=ledger)
         except pi_rpc.PiError as e:
             print(f"  {run_tag(run_id)}[FAIL] search agent: {e}\n")
             feedback = f"The search agent did not complete: {e}"
@@ -741,7 +814,7 @@ def _search_rounds(session, slug: str, question: str, pdf_info: list[dict],
 
         # ── Semantic checkers ──
         emit(run_id, "phase", {"phase": "semantic", "round": round_num})
-        semantic_failures = run_semantic_checkers(yaml_path, run_id=run_id)
+        semantic_failures = run_semantic_checkers(yaml_path, run_id=run_id, ledger=ledger)
         if semantic_failures:
             sf = semantic_failures[0]
             feedback = (f"Semantic checker FAILED for claim: {sf['claim']}\n"
@@ -754,7 +827,7 @@ def _search_rounds(session, slug: str, question: str, pdf_info: list[dict],
 
         # ── Coherence checker ──
         emit(run_id, "phase", {"phase": "coherence", "round": round_num})
-        coherence = run_coherence_checker(yaml_path, question, run_id=run_id)
+        coherence = run_coherence_checker(yaml_path, question, run_id=run_id, ledger=ledger)
         emit(run_id, "check-result",
              {"check": "coherence", "passed": coherence["passed"], "output": coherence["output"][:2000]})
         if not coherence["passed"]:
